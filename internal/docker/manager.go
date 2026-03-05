@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"adbtest/internal/adb"
 
@@ -64,10 +66,30 @@ type deviceContainers struct {
 	DeviceModel string // ro.product.model, stored in container labels
 }
 
+// testRunSummary carries the parsed wdio result for one device/run.
+type testRunSummary struct {
+	Serial    string
+	Model     string
+	FinishedAt time.Time
+	Passing   int
+	Failing   int
+	Pending   int
+	Found     bool // false if container crashed before wdio produced any output
+}
+
+func (s testRunSummary) deviceLabel() string {
+	if s.Model != "" {
+		return fmt.Sprintf("%s (%s)", s.Serial, s.Model)
+	}
+	return s.Serial
+}
+
 // Manager handles the lifecycle of Appium (and optionally test) Docker containers.
 type Manager struct {
-	cli    *client.Client
-	config Config
+	cli      *client.Client
+	config   Config
+	rebooting sync.Map  // serial → struct{}: device is mid-reboot, skip test creation
+	reportMu  sync.Mutex // serialises writes to the daily report file
 }
 
 // NewManager creates a new Manager.
@@ -131,11 +153,20 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 			continue
 		}
 
-		// Remove a stopped test container so we can recreate it.
+		// Remove a stopped test container, report results, then reboot device.
 		if dc.TestID != "" {
-			m.reportTestResult(ctx, serial, dc)
+			summary := m.reportTestResult(ctx, serial, dc)
 			log.Printf("[cleanup] removing stopped test container for %s", serial)
 			_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
+			m.rebooting.Store(serial, struct{}{})
+			go m.rebootAndReport(summary)
+			continue // test container will be recreated after device comes back
+		}
+
+		// Don't start tests while the device is rebooting.
+		if _, isRebooting := m.rebooting.Load(serial); isRebooting {
+			log.Printf("[skip] device %s is rebooting", serial)
+			continue
 		}
 
 		log.Printf("[create] test container for device %s → appium host.docker.internal:%d", serial, dc.AppiumPort)
@@ -351,61 +382,138 @@ func (m *Manager) removeDevice(ctx context.Context, dc deviceContainers) {
 }
 
 // reportTestResult reads the logs of a finished test container, parses the
-// wdio spec-reporter summary, and prints a one-line report per device.
-func (m *Manager) reportTestResult(ctx context.Context, serial string, dc deviceContainers) {
+// wdio spec-reporter summary, logs it to stdout, and returns a testRunSummary
+// for the file report (written later, after the device reboots).
+func (m *Manager) reportTestResult(ctx context.Context, serial string, dc deviceContainers) testRunSummary {
+	summary := testRunSummary{
+		Serial:     serial,
+		Model:      dc.DeviceModel,
+		FinishedAt: time.Now(),
+	}
+
 	rc, err := m.cli.ContainerLogs(ctx, dc.TestID, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 	})
 	if err != nil {
 		log.Printf("[report] %s: could not read logs: %v", serial, err)
-		return
+		return summary
 	}
 	defer rc.Close()
 
 	// Docker log stream is multiplexed (stdout/stderr); stdcopy demuxes it.
 	var buf bytes.Buffer
 	if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil {
-		// Fallback: read raw (e.g. TTY-mode containers)
 		_, _ = io.Copy(&buf, rc)
 	}
 
-	var passing, failing, pending int
-	found := false
 	scanner := bufio.NewScanner(&buf)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if ms := rePassing.FindStringSubmatch(line); ms != nil {
-			passing, _ = strconv.Atoi(ms[1])
-			found = true
+			summary.Passing, _ = strconv.Atoi(ms[1])
+			summary.Found = true
 		}
 		if ms := reFailing.FindStringSubmatch(line); ms != nil {
-			failing, _ = strconv.Atoi(ms[1])
-			found = true
+			summary.Failing, _ = strconv.Atoi(ms[1])
+			summary.Found = true
 		}
 		if ms := rePending.FindStringSubmatch(line); ms != nil {
-			pending, _ = strconv.Atoi(ms[1])
+			summary.Pending, _ = strconv.Atoi(ms[1])
 		}
-	}
-
-	device := serial
-	if dc.DeviceModel != "" {
-		device = fmt.Sprintf("%s (%s)", serial, dc.DeviceModel)
 	}
 
 	sep := strings.Repeat("─", 52)
 	log.Printf("[report] %s", sep)
-	if !found {
-		log.Printf("[report] %s — no results (container crashed?)", device)
+	if !summary.Found {
+		log.Printf("[report] %s — no results (container crashed?)", summary.deviceLabel())
 	} else {
 		verdict := "PASS"
-		if failing > 0 {
+		if summary.Failing > 0 {
 			verdict = "FAIL"
 		}
-		log.Printf("[report] %s  %s", verdict, device)
-		log.Printf("[report]        passing: %d | failing: %d | pending: %d", passing, failing, pending)
+		log.Printf("[report] %s  %s", verdict, summary.deviceLabel())
+		log.Printf("[report]        passing: %d | failing: %d | pending: %d",
+			summary.Passing, summary.Failing, summary.Pending)
 	}
 	log.Printf("[report] %s", sep)
+	return summary
+}
+
+// rebootAndReport reboots the device, waits for it to come back, then writes
+// the full report entry (test results + boot time) to the daily report file.
+func (m *Manager) rebootAndReport(summary testRunSummary) {
+	defer m.rebooting.Delete(summary.Serial)
+
+	log.Printf("[reboot] rebooting %s...", summary.deviceLabel())
+	rebootAt := time.Now()
+
+	if err := adb.Reboot(summary.Serial); err != nil {
+		log.Printf("[reboot] %s: %v", summary.Serial, err)
+		m.writeFileReport(summary, 0, rebootAt, false)
+		return
+	}
+
+	bootDuration, err := adb.WaitForReady(summary.Serial, 5*time.Minute)
+	if err != nil {
+		log.Printf("[reboot] %s: %v", summary.Serial, err)
+		m.writeFileReport(summary, bootDuration, rebootAt, false)
+		return
+	}
+
+	log.Printf("[reboot] %s ready after %s", summary.deviceLabel(), bootDuration.Round(time.Second))
+	m.writeFileReport(summary, bootDuration, rebootAt, true)
+}
+
+// writeFileReport appends a structured entry to reports/YYYY-MM-DD.log.
+func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Duration, rebootAt time.Time, bootOK bool) {
+	if err := os.MkdirAll("reports", 0o755); err != nil {
+		log.Printf("[report] mkdir reports: %v", err)
+		return
+	}
+
+	filename := fmt.Sprintf("reports/%s.log", summary.FinishedAt.Format("2006-01-02"))
+
+	m.reportMu.Lock()
+	defer m.reportMu.Unlock()
+
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("[report] open %s: %v", filename, err)
+		return
+	}
+	defer f.Close()
+
+	sep := strings.Repeat("─", 60)
+	fmt.Fprintln(f, sep)
+	fmt.Fprintf(f, "Time:    %s\n", summary.FinishedAt.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(f, "Device:  %s\n", summary.deviceLabel())
+
+	if !summary.Found {
+		fmt.Fprintln(f, "Tests:   no results (container crashed before tests ran)")
+	} else {
+		verdict := "PASS"
+		if summary.Failing > 0 {
+			verdict = "FAIL"
+		}
+		fmt.Fprintf(f, "Tests:   %s  |  passing: %d  failing: %d  pending: %d\n",
+			verdict, summary.Passing, summary.Failing, summary.Pending)
+	}
+
+	if bootOK {
+		readyAt := rebootAt.Add(bootDuration)
+		fmt.Fprintf(f, "Reboot:  %s  (started: %s, ready: %s)\n",
+			bootDuration.Round(time.Second),
+			rebootAt.Format("15:04:05"),
+			readyAt.Format("15:04:05"))
+	} else {
+		fmt.Fprintf(f, "Reboot:  FAILED or timed out (elapsed: %s)\n",
+			bootDuration.Round(time.Second))
+	}
+
+	fmt.Fprintln(f, sep)
+	fmt.Fprintln(f, "")
+	log.Printf("[report] written to %s", filename)
 }
 
 // sanitize replaces characters not safe for Docker container names with '-'.

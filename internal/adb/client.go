@@ -6,6 +6,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Device represents a connected Android device.
@@ -62,6 +63,47 @@ func ListDevices() ([]Device, error) {
 	}
 
 	return devices, nil
+}
+
+// Reboot sends `adb reboot` to the device.
+func Reboot(serial string) error {
+	if out, err := exec.Command("adb", "-s", serial, "reboot").CombinedOutput(); err != nil {
+		return fmt.Errorf("adb reboot: %w\n%s", err, out)
+	}
+	return nil
+}
+
+// isOnline returns true if the device reports state "device".
+func isOnline(serial string) bool {
+	out, err := exec.Command("adb", "-s", serial, "get-state").Output()
+	return err == nil && strings.TrimSpace(string(out)) == "device"
+}
+
+// WaitForReady blocks until the device is in "device" state or timeout expires.
+// It first waits (up to 30 s) for the device to go offline so we don't return
+// prematurely if it hasn't actually started rebooting yet.
+// Returns the total elapsed time from the moment it is called.
+func WaitForReady(serial string, timeout time.Duration) (time.Duration, error) {
+	start := time.Now()
+
+	// Phase 1 – wait for the device to go offline (max 30 s).
+	offlineDeadline := start.Add(30 * time.Second)
+	for time.Now().Before(offlineDeadline) {
+		if !isOnline(serial) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	// Phase 2 – wait for the device to come back.
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(3 * time.Second)
+		if isOnline(serial) {
+			return time.Since(start), nil
+		}
+	}
+	return time.Since(start), fmt.Errorf("device %s not ready after %v", serial, timeout)
 }
 
 // EnsureServerListensOnAllInterfaces restarts the ADB server with the -a flag
