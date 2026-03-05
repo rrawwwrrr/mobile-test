@@ -12,6 +12,7 @@ import (
 type Device struct {
 	Serial string
 	State  string
+	Model  string // ro.product.model, populated for ready devices
 }
 
 // IsReady returns true if the device is online and ready.
@@ -46,8 +47,21 @@ func ListDevices() ([]Device, error) {
 			State:  parts[1],
 		})
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 
-	return devices, scanner.Err()
+	// Populate model name for ready devices.
+	for i, d := range devices {
+		if !d.IsReady() {
+			continue
+		}
+		if b, err := exec.Command("adb", "-s", d.Serial, "shell", "getprop", "ro.product.model").Output(); err == nil {
+			devices[i].Model = strings.TrimSpace(string(b))
+		}
+	}
+
+	return devices, nil
 }
 
 // EnsureServerListensOnAllInterfaces restarts the ADB server with the -a flag

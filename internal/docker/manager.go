@@ -1,12 +1,16 @@
 package docker
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"adbtest/internal/adb"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 const (
@@ -22,6 +27,7 @@ const (
 	labelDevice  = "adbtest.device"
 	labelPort    = "adbtest.port"
 	labelRole    = "adbtest.role"
+	labelModel   = "adbtest.model"
 
 	roleAppium = "appium"
 	roleTests  = "tests"
@@ -29,6 +35,13 @@ const (
 	// adbNetwork is a dedicated bridge network shared by appium + test containers
 	// so they can reach each other by container name without going through the host.
 	adbNetwork = "adbtest"
+)
+
+// wdio spec-reporter output patterns, e.g. "4 passing (5.1s)", "1 failing".
+var (
+	rePassing = regexp.MustCompile(`(\d+) passing`)
+	reFailing = regexp.MustCompile(`(\d+) failing`)
+	rePending = regexp.MustCompile(`(\d+) pending`)
 )
 
 // Config holds the manager configuration.
@@ -46,8 +59,9 @@ type deviceContainers struct {
 	AppiumPort int
 	AppiumName string
 
-	TestID     string
-	TestStatus string // "running" | "exited" | "created" | ""
+	TestID      string
+	TestStatus  string // "running" | "exited" | "created" | ""
+	DeviceModel string // ro.product.model, stored in container labels
 }
 
 // Manager handles the lifecycle of Appium (and optionally test) Docker containers.
@@ -119,6 +133,7 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 
 		// Remove a stopped test container so we can recreate it.
 		if dc.TestID != "" {
+			m.reportTestResult(ctx, serial, dc)
 			log.Printf("[cleanup] removing stopped test container for %s", serial)
 			_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
 		}
@@ -183,6 +198,9 @@ func (m *Manager) listManaged(ctx context.Context) (map[string]deviceContainers,
 		serial := c.Labels[labelDevice]
 		dc := result[serial]
 
+		if model := c.Labels[labelModel]; model != "" {
+			dc.DeviceModel = model
+		}
 		switch c.Labels[labelRole] {
 		case roleAppium:
 			port, _ := strconv.Atoi(c.Labels[labelPort])
@@ -256,6 +274,7 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 			labelDevice:  dev.Serial,
 			labelRole:    roleAppium,
 			labelPort:    strconv.Itoa(hostPort),
+			labelModel:   dev.Model,
 		},
 	}
 
@@ -298,6 +317,7 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 			labelManaged: "true",
 			labelDevice:  dev.Serial,
 			labelRole:    roleTests,
+			labelModel:   dev.Model,
 		},
 	}
 
@@ -328,6 +348,64 @@ func (m *Manager) removeDevice(ctx context.Context, dc deviceContainers) {
 			log.Printf("[remove] container %s: %v", id[:12], err)
 		}
 	}
+}
+
+// reportTestResult reads the logs of a finished test container, parses the
+// wdio spec-reporter summary, and prints a one-line report per device.
+func (m *Manager) reportTestResult(ctx context.Context, serial string, dc deviceContainers) {
+	rc, err := m.cli.ContainerLogs(ctx, dc.TestID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+	})
+	if err != nil {
+		log.Printf("[report] %s: could not read logs: %v", serial, err)
+		return
+	}
+	defer rc.Close()
+
+	// Docker log stream is multiplexed (stdout/stderr); stdcopy demuxes it.
+	var buf bytes.Buffer
+	if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil {
+		// Fallback: read raw (e.g. TTY-mode containers)
+		_, _ = io.Copy(&buf, rc)
+	}
+
+	var passing, failing, pending int
+	found := false
+	scanner := bufio.NewScanner(&buf)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if ms := rePassing.FindStringSubmatch(line); ms != nil {
+			passing, _ = strconv.Atoi(ms[1])
+			found = true
+		}
+		if ms := reFailing.FindStringSubmatch(line); ms != nil {
+			failing, _ = strconv.Atoi(ms[1])
+			found = true
+		}
+		if ms := rePending.FindStringSubmatch(line); ms != nil {
+			pending, _ = strconv.Atoi(ms[1])
+		}
+	}
+
+	device := serial
+	if dc.DeviceModel != "" {
+		device = fmt.Sprintf("%s (%s)", serial, dc.DeviceModel)
+	}
+
+	sep := strings.Repeat("─", 52)
+	log.Printf("[report] %s", sep)
+	if !found {
+		log.Printf("[report] %s — no results (container crashed?)", device)
+	} else {
+		verdict := "PASS"
+		if failing > 0 {
+			verdict = "FAIL"
+		}
+		log.Printf("[report] %s  %s", verdict, device)
+		log.Printf("[report]        passing: %d | failing: %d | pending: %d", passing, failing, pending)
+	}
+	log.Printf("[report] %s", sep)
 }
 
 // sanitize replaces characters not safe for Docker container names with '-'.
