@@ -1,0 +1,153 @@
+name: Release
+
+# Triggered by pushing a version tag: git tag v1.2.3 && git push --tags
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  IMAGE: rrawwwrrr/adbtest-tests
+
+jobs:
+  # ── 1. Build Go binaries for all platforms ─────────────────────────────────
+  build-binaries:
+    name: Build Go binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build for all platforms
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME}"   # e.g. v1.2.3
+
+          declare -A targets=(
+            ["linux-amd64"]="linux/amd64"
+            ["linux-arm64"]="linux/arm64"
+            ["darwin-amd64"]="darwin/amd64"
+            ["darwin-arm64"]="darwin/arm64"
+            ["windows-amd64"]="windows/amd64"
+          )
+
+          mkdir -p dist
+
+          for name in "${!targets[@]}"; do
+            target="${targets[$name]}"
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+
+            binary="adbtest-${name}"
+            [ "$GOOS" = "windows" ] && binary="${binary}.exe"
+
+            echo "→ Building $binary (${GOOS}/${GOARCH})"
+            GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath \
+                -ldflags="-s -w -X main.version=${VERSION}" \
+                -o "dist/${binary}" .
+
+            # Archive
+            if [ "$GOOS" = "windows" ]; then
+              zip -j "dist/adbtest-${name}.zip" "dist/${binary}"
+            else
+              tar -czf "dist/adbtest-${name}.tar.gz" -C dist "${binary}"
+            fi
+
+            rm "dist/${binary}"
+          done
+
+          ls -lh dist/
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 1
+
+  # ── 2. Build & push Docker test image with version tag ────────────────────
+  build-test-image:
+    name: Build & push test image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: rrawwwrrr
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            # version tag from git tag, e.g. v1.2.3
+            type=semver,pattern={{version}}
+            # major.minor, e.g. 1.2
+            type=semver,pattern={{major}}.{{minor}}
+            # latest
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: tests/
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Create GitHub Release and attach binaries ──────────────────────────
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-binaries, build-test-image]
+
+    permissions:
+      contents: write # needed to create a release
+
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Release ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            ## Docker test image
+
+            ```
+            docker pull rrawwwrrr/adbtest-tests:${{ github.ref_name }}
+            ```
+
+            ## Usage
+
+            Download the binary for your platform below, then:
+
+            ```bash
+            # Linux amd64
+            tar xzf adbtest-linux-amd64.tar.gz
+            chmod +x adbtest-linux-amd64
+
+            TEST_IMAGE=rrawwwrrr/adbtest-tests:${{ github.ref_name }} \
+            ADBTEST_WATCH=true \
+            ./adbtest-linux-amd64 -restart-adb
+            ```

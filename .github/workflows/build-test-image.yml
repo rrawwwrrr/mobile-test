@@ -1,0 +1,66 @@
+name: Build & Push test image
+
+on:
+  push:
+    branches: [main]          # tags are handled by release.yml
+    paths:
+      - "tests/**"
+      - ".github/workflows/build-test-image.yml"
+  # PRs are handled by ci.yml (build-only, no push)
+  workflow_dispatch:
+    inputs:
+      apidemos_version:
+        description: "ApiDemos release tag (e.g. v6.0.6)"
+        required: false
+        default: "v6.0.6"
+
+env:
+  # docker.io/rrawwwrrr/adbtest-tests
+  IMAGE: rrawwwrrr/adbtest-tests
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        # Only push on main branch; PRs just build (no push)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: rrawwwrrr
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            # latest on default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # branch name  (e.g. main, feature-xyz)
+            type=ref,event=branch
+            # short commit SHA  (e.g. sha-a1b2c3d)
+            type=sha,prefix=sha-
+            # PR label  (build-only, not pushed)
+            type=ref,event=pr
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: tests/
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APIDEMOS_VERSION=${{ github.event.inputs.apidemos_version || 'v6.0.6' }}
+          # GitHub Actions layer cache — speeds up repeated builds significantly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
