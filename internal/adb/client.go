@@ -79,7 +79,16 @@ func isOnline(serial string) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "device"
 }
 
-// WaitForReady blocks until the device is in "device" state or timeout expires.
+// isBootCompleted returns true when Android has finished booting
+// (sys.boot_completed=1). ADB becomes reachable well before the system
+// finishes starting, so checking only get-state is not enough.
+func isBootCompleted(serial string) bool {
+	out, err := exec.Command("adb", "-s", serial, "shell", "getprop", "sys.boot_completed").Output()
+	return err == nil && strings.TrimSpace(string(out)) == "1"
+}
+
+// WaitForReady blocks until the device is in "device" state AND has fully
+// booted (sys.boot_completed=1), or until timeout expires.
 // It first waits (up to 30 s) for the device to go offline so we don't return
 // prematurely if it hasn't actually started rebooting yet.
 // Returns the total elapsed time from the moment it is called.
@@ -95,11 +104,13 @@ func WaitForReady(serial string, timeout time.Duration) (time.Duration, error) {
 		time.Sleep(2 * time.Second)
 	}
 
-	// Phase 2 – wait for the device to come back.
+	// Phase 2 – wait for the device to come back AND finish booting.
+	// ADB transport becomes available long before the system is fully up;
+	// sys.boot_completed=1 confirms that all system services have started.
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(3 * time.Second)
-		if isOnline(serial) {
+		if isOnline(serial) && isBootCompleted(serial) {
 			return time.Since(start), nil
 		}
 	}
