@@ -32,6 +32,8 @@ exports.config = {
       'appium:noReset': false,
       'appium:newCommandTimeout': 90,
       'appium:androidInstallTimeout': 120000,
+      // Non-rooted devices deny WRITE_SECURE_SETTINGS; ignore that error and continue.
+      'appium:ignoreHiddenApiPolicyError': true,
     },
   ],
 
