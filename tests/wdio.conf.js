@@ -34,9 +34,10 @@ exports.config = {
       'appium:app': apkUrl,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
-      // Don't clear app data or uninstall between sessions —
-      // avoids pm clear / CLEAR_APP_USER_DATA permission errors on locked-down devices.
+      // Don't clear app data or uninstall (avoids pm clear permission errors),
+      // but always force-restart the app so each session starts on the main screen.
       'appium:noReset': true,
+      'appium:forceAppLaunch': true,
       'appium:newCommandTimeout': 90,
       'appium:androidInstallTimeout': 120000,
       // UiAutomator2 server install can be slow on first run — give it more time.
