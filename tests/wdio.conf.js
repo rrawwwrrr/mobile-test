@@ -9,6 +9,11 @@ const appiumHost = process.env.APPIUM_HOST || 'localhost';
 const appiumPort = parseInt(process.env.APPIUM_PORT || '4723', 10);
 const deviceSerial = process.env.ANDROID_SERIAL || '';
 
+// Appium downloads the APK by URL directly into the Appium container —
+// no need to share files between the test container and the Appium container.
+const apkUrl = process.env.APIDEMOS_APK_URL ||
+  'https://github.com/appium/android-apidemos/releases/download/v6.0.6/ApiDemos-debug.apk';
+
 exports.config = {
   runner: 'local',
 
@@ -26,12 +31,17 @@ exports.config = {
       'appium:deviceName': deviceSerial,
       'appium:udid': deviceSerial,
       'appium:automationName': 'UiAutomator2',
-      'appium:app': '/app/ApiDemos-debug.apk',
+      'appium:app': apkUrl,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
-      'appium:noReset': false,
+      // Don't clear app data or uninstall between sessions —
+      // avoids pm clear / CLEAR_APP_USER_DATA permission errors on locked-down devices.
+      'appium:noReset': true,
       'appium:newCommandTimeout': 90,
       'appium:androidInstallTimeout': 120000,
+      // UiAutomator2 server install can be slow on first run — give it more time.
+      'appium:uiautomator2ServerLaunchTimeout': 60000,
+      'appium:uiautomator2ServerInstallTimeout': 60000,
       // Non-rooted devices deny WRITE_SECURE_SETTINGS; ignore that error and continue.
       'appium:ignoreHiddenApiPolicyError': true,
     },

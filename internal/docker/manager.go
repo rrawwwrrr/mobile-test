@@ -15,7 +15,6 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 )
 
 const (
@@ -124,8 +123,8 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 			_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
 		}
 
-		log.Printf("[create] test container for device %s → appium %s:4723", serial, dc.AppiumName)
-		if err := m.createTest(ctx, dev, dc.AppiumName); err != nil {
+		log.Printf("[create] test container for device %s → appium host.docker.internal:%d", serial, dc.AppiumPort)
+		if err := m.createTest(ctx, dev, dc.AppiumPort); err != nil {
 			log.Printf("[create] test container for %s: %v", serial, err)
 		}
 	}
@@ -219,18 +218,25 @@ func (m *Manager) nextPort(existing map[string]deviceContainers) int {
 }
 
 // createAppium starts an Appium container for the given device.
+//
+// The container runs with --network=host so that `adb forward` port bindings
+// created by Appium on the host are accessible via localhost inside the
+// container. Without host networking, Appium would forward device ports on the
+// host but then fail to connect to them because "localhost" inside the
+// container is the container itself, not the host.
 func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int) (*deviceContainers, error) {
 	name := "appium-" + sanitize(dev.Serial)
-	appiumPort := nat.Port("4723/tcp")
 
 	cfg := &container.Config{
 		Image: m.config.AppiumImage,
 		Env: []string{
 			"ANDROID_SERIAL=" + dev.Serial,
-			"ANDROID_ADB_SERVER_ADDRESS=" + m.config.ADBHost,
+			// With host networking, ADB server is on localhost.
+			"ANDROID_ADB_SERVER_ADDRESS=localhost",
 			fmt.Sprintf("ANDROID_ADB_SERVER_PORT=%d", m.config.ADBPort),
+			// Tell the appium/appium start.sh to listen on the per-device port.
+			fmt.Sprintf("APPIUM_ADDITIONAL_PARAMS=--port %d --address 0.0.0.0", hostPort),
 		},
-		ExposedPorts: nat.PortSet{appiumPort: {}},
 		Labels: map[string]string{
 			labelManaged: "true",
 			labelDevice:  dev.Serial,
@@ -240,21 +246,12 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 	}
 
 	hostCfg := &container.HostConfig{
-		PortBindings: nat.PortMap{
-			appiumPort: []nat.PortBinding{
-				{HostIP: "0.0.0.0", HostPort: strconv.Itoa(hostPort)},
-			},
-		},
-		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+		// Host networking: the container shares the host's network stack.
+		// adb forward ports appear on 127.0.0.1 and Appium can reach them.
+		NetworkMode: "host",
 	}
 
-	netCfg := &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			adbNetwork: {},
-		},
-	}
-
-	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, name)
+	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
 		return nil, fmt.Errorf("create: %w", err)
 	}
@@ -263,7 +260,7 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
-	log.Printf("[appium] started %s (id=%s) → host port %d", name, resp.ID[:12], hostPort)
+	log.Printf("[appium] started %s (id=%s, host-network) → port %d", name, resp.ID[:12], hostPort)
 	return &deviceContainers{
 		AppiumID:   resp.ID,
 		AppiumPort: hostPort,
@@ -271,17 +268,17 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 	}, nil
 }
 
-// createTest starts a test container that connects to the given Appium container.
-func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumContainerName string) error {
+// createTest starts a test container that connects to Appium running on the host network.
+func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int) error {
 	name := "tests-" + sanitize(dev.Serial)
 
 	cfg := &container.Config{
 		Image: m.config.TestImage,
 		Env: []string{
 			"ANDROID_SERIAL=" + dev.Serial,
-			// Reach Appium by its container name on the shared adbtest network.
-			"APPIUM_HOST=" + appiumContainerName,
-			"APPIUM_PORT=4723",
+			// Appium runs on host network → reach it via host.docker.internal.
+			"APPIUM_HOST=host.docker.internal",
+			fmt.Sprintf("APPIUM_PORT=%d", appiumPort),
 		},
 		Labels: map[string]string{
 			labelManaged: "true",
@@ -291,16 +288,10 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumContaine
 	}
 
 	hostCfg := &container.HostConfig{
-		// Tests run to completion — no port bindings needed.
+		ExtraHosts: []string{"host.docker.internal:host-gateway"},
 	}
 
-	netCfg := &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			adbNetwork: {},
-		},
-	}
-
-	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, name)
+	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
@@ -309,7 +300,7 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumContaine
 		return fmt.Errorf("start: %w", err)
 	}
 
-	log.Printf("[tests] started %s (id=%s) → appium %s:4723", name, resp.ID[:12], appiumContainerName)
+	log.Printf("[tests] started %s (id=%s) → appium host.docker.internal:%d", name, resp.ID[:12], appiumPort)
 	return nil
 }
 

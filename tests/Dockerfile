@@ -10,12 +10,6 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-# Download ApiDemos APK
-ARG APIDEMOS_VERSION=v6.0.6
-RUN curl -fsSL \
-    "https://github.com/appium/android-apidemos/releases/download/${APIDEMOS_VERSION}/ApiDemos-debug.apk" \
-    -o /app/ApiDemos-debug.apk
-
 # Copy test sources
 COPY wdio.conf.js ./
 COPY test/ ./test/
