@@ -224,8 +224,17 @@ func (m *Manager) nextPort(existing map[string]deviceContainers) int {
 // container. Without host networking, Appium would forward device ports on the
 // host but then fail to connect to them because "localhost" inside the
 // container is the container itself, not the host.
+//
+// Host-network containers share the abstract Unix-socket namespace, so each
+// Xvfb instance must use a unique display number (derived from hostPort) to
+// avoid "Xvfb failed to start" when multiple devices are connected.
 func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int) (*deviceContainers, error) {
 	name := "appium-" + sanitize(dev.Serial)
+
+	// Free the port from any orphaned process before creating the container.
+	// With --network=host, a previously force-removed container's Appium process
+	// may still be alive and holding the port; kill it now so the bind succeeds.
+	killPortHolder(hostPort)
 
 	cfg := &container.Config{
 		Image: m.config.AppiumImage,
@@ -234,9 +243,18 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 			// With host networking, ADB server is on localhost.
 			"ANDROID_ADB_SERVER_ADDRESS=localhost",
 			fmt.Sprintf("ANDROID_ADB_SERVER_PORT=%d", m.config.ADBPort),
-			// Tell the appium/appium start.sh to listen on the per-device port.
-			fmt.Sprintf("APPIUM_ADDITIONAL_PARAMS=--port %d --address 0.0.0.0", hostPort),
 		},
+		// Override start.sh so xvfb-run uses -a (auto-select display number).
+		// Host-network containers share the abstract Unix-socket namespace, so
+		// a fixed display :99 would collide when multiple devices are connected.
+		// With -a, xvfb-run probes for a free display across all containers.
+		// The image ENTRYPOINT is ["sh","-c"], so Cmd[0] is the shell script.
+		Cmd: []string{fmt.Sprintf(
+			`pkill -x Xvfb 2>/dev/null; `+
+				`xvfb-run -a --server-args="-screen 0 1280x800x24" `+
+				`appium --log /var/log/appium.log --port %d --address 0.0.0.0`,
+			hostPort,
+		)},
 		Labels: map[string]string{
 			labelManaged: "true",
 			labelDevice:  dev.Serial,
