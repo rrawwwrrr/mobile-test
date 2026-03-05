@@ -244,15 +244,11 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 			"ANDROID_ADB_SERVER_ADDRESS=localhost",
 			fmt.Sprintf("ANDROID_ADB_SERVER_PORT=%d", m.config.ADBPort),
 		},
-		// Override start.sh so xvfb-run uses -a (auto-select display number).
-		// Host-network containers share the abstract Unix-socket namespace, so
-		// a fixed display :99 would collide when multiple devices are connected.
-		// With -a, xvfb-run probes for a free display across all containers.
+		// Skip start.sh (which wraps appium in xvfb-run) — Xvfb is not needed
+		// for Android/UiAutomator2, which talks to the device over ADB, not X11.
 		// The image ENTRYPOINT is ["sh","-c"], so Cmd[0] is the shell script.
 		Cmd: []string{fmt.Sprintf(
-			`pkill -x Xvfb 2>/dev/null; `+
-				`xvfb-run -a --server-args="-screen 0 1280x800x24" `+
-				`appium --log /var/log/appium.log --port %d --address 0.0.0.0`,
+			`appium --log /var/log/appium.log --port %d --address 0.0.0.0`,
 			hostPort,
 		)},
 		Labels: map[string]string{
