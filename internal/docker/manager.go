@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"adbtest/internal/adb"
+	"adbtest/internal/store"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -86,15 +87,16 @@ func (s testRunSummary) deviceLabel() string {
 
 // Manager handles the lifecycle of Appium (and optionally test) Docker containers.
 type Manager struct {
-	cli      *client.Client
-	config   Config
-	rebooting sync.Map  // serial → struct{}: device is mid-reboot, skip test creation
+	cli       *client.Client
+	config    Config
+	store     *store.Store
+	rebooting sync.Map   // serial → struct{}: device is mid-reboot, skip test creation
 	reportMu  sync.Mutex // serialises writes to the daily report file
 }
 
-// NewManager creates a new Manager.
-func NewManager(cli *client.Client, cfg Config) *Manager {
-	return &Manager{cli: cli, config: cfg}
+// NewManager creates a new Manager. st may be nil (SQLite disabled).
+func NewManager(cli *client.Client, cfg Config, st *store.Store) *Manager {
+	return &Manager{cli: cli, config: cfg, store: st}
 }
 
 // Reconcile brings the set of running containers in sync with connected ADB devices.
@@ -514,6 +516,24 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 	fmt.Fprintln(f, sep)
 	fmt.Fprintln(f, "")
 	log.Printf("[report] written to %s", filename)
+
+	// Also persist to SQLite if a store is configured.
+	if m.store != nil {
+		run := store.Run{
+			Serial:      summary.Serial,
+			Model:       summary.Model,
+			FinishedAt:  summary.FinishedAt,
+			Passing:     summary.Passing,
+			Failing:     summary.Failing,
+			Pending:     summary.Pending,
+			Found:       summary.Found,
+			BootOK:      bootOK,
+			BootSeconds: bootDuration.Seconds(),
+		}
+		if err := m.store.Insert(run); err != nil {
+			log.Printf("[report] sqlite insert: %v", err)
+		}
+	}
 }
 
 // sanitize replaces characters not safe for Docker container names with '-'.

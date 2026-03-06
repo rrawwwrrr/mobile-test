@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 
 	"adbtest/internal/adb"
 	"adbtest/internal/docker"
+	"adbtest/internal/store"
+	"adbtest/internal/web"
 
 	dockerclient "github.com/docker/docker/client"
 )
@@ -59,6 +62,8 @@ func main() {
 	//   ADBTEST_INTERVAL    – Poll interval, e.g. "10s"      (default: 5s)
 	//   ADBTEST_PULL        – Pull Appium image before start (1/true/yes)
 	//   ADBTEST_RESTART_ADB – Restart ADB on all interfaces  (1/true/yes)
+	//   ADBTEST_HTTP_ADDR   – HTTP dashboard listen address  (default: :8080)
+	//   ADBTEST_DB          – SQLite database path           (default: reports/adbtest.db)
 
 	var (
 		watch      = flag.Bool("watch", envOrBool("ADBTEST_WATCH"), "Continuously watch for device changes [$ADBTEST_WATCH]")
@@ -72,8 +77,12 @@ func main() {
 		adbPort  = flag.Int("adb-port", envOrInt("ADB_PORT", 5037), "ADB server port [$ADB_PORT]")
 
 		// Test runner options.
-		testImage   = flag.String("test-image", envOr("TEST_IMAGE", ""), "Docker image for test containers; empty = no tests [$TEST_IMAGE]")
+		testImage    = flag.String("test-image", envOr("TEST_IMAGE", ""), "Docker image for test containers; empty = no tests [$TEST_IMAGE]")
 		testBuildCtx = flag.String("test-build", envOr("TEST_BUILD_CONTEXT", ""), "Build test image from this directory before starting [$TEST_BUILD_CONTEXT]")
+
+		// Dashboard options.
+		httpAddr = flag.String("http-addr", envOr("ADBTEST_HTTP_ADDR", ":8080"), "HTTP dashboard listen address [$ADBTEST_HTTP_ADDR]")
+		dbPath   = flag.String("db", envOr("ADBTEST_DB", "reports/adbtest.db"), "SQLite database path [$ADBTEST_DB]")
 	)
 
 	// interval needs special handling because it is a duration.
@@ -99,6 +108,13 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
+	// Open SQLite store.
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("Store: %v", err)
+	}
+	defer st.Close()
+
 	cli, err := dockerclient.NewClientWithOpts(
 		dockerclient.FromEnv,
 		dockerclient.WithAPIVersionNegotiation(),
@@ -115,7 +131,7 @@ func main() {
 		ADBHost:     *adbHost,
 		ADBPort:     *adbPort,
 	}
-	mgr := docker.NewManager(cli, cfg)
+	mgr := docker.NewManager(cli, cfg, st)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -138,6 +154,19 @@ func main() {
 			log.Fatalf("Pull image: %v", err)
 		}
 	}
+
+	// Start HTTP dashboard.
+	webSrv := web.NewServer(st)
+	mux := http.NewServeMux()
+	webSrv.RegisterRoutes(mux)
+	httpServer := &http.Server{Addr: *httpAddr, Handler: mux}
+	go func() {
+		log.Printf("Dashboard listening on http://%s", *httpAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server: %v", err)
+		}
+	}()
+	defer httpServer.Shutdown(context.Background())
 
 	if *watch {
 		log.Printf("Watch mode (interval=%s, appium=%s, tests=%s, base-port=%d)",
