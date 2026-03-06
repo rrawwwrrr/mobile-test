@@ -34,7 +34,9 @@ exports.config = {
       'appium:app': apkUrl,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
-      // Force-restart the app so each session starts on the main screen.
+      // Don't clear app data (pm clear is denied on Realme without root),
+      // but always force-restart the app so each session starts on the main screen.
+      'appium:noReset': true,
       'appium:forceAppLaunch': true,
       'appium:newCommandTimeout': 90,
       'appium:androidInstallTimeout': 120000,
