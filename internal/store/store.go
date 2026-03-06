@@ -146,6 +146,76 @@ func (s *Store) List(serial string, limit int) ([]Run, error) {
 	return scanRuns(rows)
 }
 
+// DeviceStats holds aggregated statistics for one device.
+type DeviceStats struct {
+	Serial     string
+	Model      string
+	TotalRuns  int     // total number of completed test cycles
+	FailedRuns int     // cycles where at least one test failed
+	TotalTests int     // sum of passing + failing across all runs
+	TotalFail  int     // sum of failing tests across all runs
+	AvgBoot    float64 // average reboot time in seconds (successful reboots only)
+	MinBoot    float64
+	MaxBoot    float64
+}
+
+// PassRate returns the percentage of passing tests (0–100).
+func (s DeviceStats) PassRate() float64 {
+	if s.TotalTests == 0 {
+		return 0
+	}
+	return float64(s.TotalTests-s.TotalFail) / float64(s.TotalTests) * 100
+}
+
+// DeviceLabel returns "serial (model)" or just "serial".
+func (s DeviceStats) DeviceLabel() string {
+	if s.Model != "" {
+		return fmt.Sprintf("%s (%s)", s.Serial, s.Model)
+	}
+	return s.Serial
+}
+
+// Stats returns per-device aggregated statistics, ordered by most recent run.
+func (s *Store) Stats() ([]DeviceStats, error) {
+	rows, err := s.db.Query(`
+		SELECT
+			serial,
+			MAX(model) AS model,
+			COUNT(*)   AS total_runs,
+			SUM(CASE WHEN found=1 AND failing>0 THEN 1 ELSE 0 END) AS failed_runs,
+			SUM(passing + failing) AS total_tests,
+			SUM(failing)           AS total_fail,
+			AVG(CASE WHEN boot_ok=1 THEN boot_seconds END) AS avg_boot,
+			MIN(CASE WHEN boot_ok=1 THEN boot_seconds END) AS min_boot,
+			MAX(CASE WHEN boot_ok=1 THEN boot_seconds END) AS max_boot
+		FROM runs
+		GROUP BY serial
+		ORDER BY MAX(finished_at) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []DeviceStats
+	for rows.Next() {
+		var st DeviceStats
+		var avgBoot, minBoot, maxBoot sql.NullFloat64
+		if err := rows.Scan(
+			&st.Serial, &st.Model,
+			&st.TotalRuns, &st.FailedRuns,
+			&st.TotalTests, &st.TotalFail,
+			&avgBoot, &minBoot, &maxBoot,
+		); err != nil {
+			return nil, err
+		}
+		st.AvgBoot = avgBoot.Float64
+		st.MinBoot = minBoot.Float64
+		st.MaxBoot = maxBoot.Float64
+		stats = append(stats, st)
+	}
+	return stats, rows.Err()
+}
+
 // Devices returns all unique serial numbers that have runs, ordered by most recent.
 func (s *Store) Devices() ([]string, error) {
 	rows, err := s.db.Query(`

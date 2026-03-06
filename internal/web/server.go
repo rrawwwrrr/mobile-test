@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -43,6 +44,7 @@ func NewServer(s *store.Store) *Server {
 			return strconv.Itoa(secs/60) + "m " + strconv.Itoa(secs%60) + "s"
 		},
 		"sub":          func(a, b float64) float64 { return a - b },
+		"printf":       fmt.Sprintf,
 		"limitOptions": func() []int { return []int{50, 100, 200, 500} },
 	}).Parse(dashboardHTML))
 	return srv
@@ -64,6 +66,7 @@ func (s *Server) ServeAPKDir(mux *http.ServeMux, dir string) {
 
 type dashboardData struct {
 	Runs    []store.Run
+	Stats   []store.DeviceStats
 	Devices []string
 	Serial  string
 	Limit   int
@@ -92,10 +95,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	stats, err := s.store.Stats()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, dashboardData{
 		Runs:    runs,
+		Stats:   stats,
 		Devices: devices,
 		Serial:  serial,
 		Limit:   limit,
@@ -178,6 +187,53 @@ tr:hover td{background:#1a1d27}
   </form>
   <span class="count">{{len .Runs}} rows</span>
 </div>
+
+{{if .Stats}}
+<div style="padding:0 24px 24px">
+<h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Device summary</h2>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+{{range .Stats}}
+<div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+    <div>
+      <div class="mono" style="font-size:.85rem;color:#e2e8f0">{{.Serial}}</div>
+      {{if .Model}}<div style="font-size:.75rem;color:#64748b;margin-top:2px">{{.Model}}</div>{{end}}
+    </div>
+    <div style="text-align:right">
+      {{if eq .FailedRuns 0}}
+        <span class="badge pass">{{.TotalRuns}} runs</span>
+      {{else}}
+        <span class="badge fail">{{.FailedRuns}}/{{.TotalRuns}} failed</span>
+      {{end}}
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+    <div style="background:#0f1117;border-radius:6px;padding:10px">
+      <div style="font-size:.7rem;color:#64748b;margin-bottom:4px">TESTS FAILED</div>
+      <div style="font-size:1.1rem;font-weight:600;color:{{if gt .TotalFail 0}}#f87171{{else}}#86efac{{end}}">
+        {{.TotalFail}}<span style="font-size:.75rem;font-weight:400;color:#64748b"> / {{.TotalTests}}</span>
+      </div>
+    </div>
+    <div style="background:#0f1117;border-radius:6px;padding:10px">
+      <div style="font-size:.7rem;color:#64748b;margin-bottom:4px">PASS RATE</div>
+      <div style="font-size:1.1rem;font-weight:600;color:{{if lt (printf "%.0f" .PassRate) "80"}}#f87171{{else if lt (printf "%.0f" .PassRate) "100"}}#fbbf24{{else}}#86efac{{end}}">
+        {{printf "%.0f" .PassRate}}%
+      </div>
+    </div>
+  </div>
+  <div style="background:#0f1117;border-radius:6px;padding:10px">
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">REBOOT TIME</div>
+    <div style="display:flex;justify-content:space-between;font-size:.8rem">
+      <span style="color:#64748b">avg <span style="color:#94a3b8;font-weight:600">{{fmtSecs .AvgBoot}}</span></span>
+      <span style="color:#64748b">min <span style="color:#86efac;font-weight:600">{{fmtSecs .MinBoot}}</span></span>
+      <span style="color:#64748b">max <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxBoot}}</span></span>
+    </div>
+  </div>
+</div>
+{{end}}
+</div>
+</div>
+{{end}}
 
 {{if not .Runs}}
 <p class="empty">No test runs recorded yet.</p>
