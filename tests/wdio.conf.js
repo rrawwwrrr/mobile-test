@@ -62,4 +62,16 @@ exports.config = {
 
   // Log level: trace | debug | info | warn | error | silent
   logLevel: 'info',
+
+  async before() {
+    // Press Home to dismiss any system overlay (crash dialogs, setup wizards, etc.)
+    // that would block interactions, then bring the app back to the foreground.
+    // keycode 3 = KEYCODE_HOME
+    try {
+      await driver.pressKeyCode(3);
+      await driver.activateApp('io.appium.android.apis');
+    } catch (e) {
+      console.warn('[before] HOME/activate failed:', e.message);
+    }
+  },
 };
