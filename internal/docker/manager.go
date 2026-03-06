@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,17 +21,19 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
 const (
-	labelManaged = "adbtest.managed"
-	labelDevice  = "adbtest.device"
-	labelPort    = "adbtest.port"
-	labelRole    = "adbtest.role"
-	labelModel   = "adbtest.model"
+	labelManaged   = "adbtest.managed"
+	labelDevice    = "adbtest.device"
+	labelPort      = "adbtest.port"
+	labelRole      = "adbtest.role"
+	labelModel     = "adbtest.model"
+	labelStartedAt = "adbtest.started_at" // RFC3339 timestamp when test container was created
 
 	roleAppium = "appium"
 	roleTests  = "tests"
@@ -38,11 +41,15 @@ const (
 	// adbNetwork is a dedicated bridge network shared by appium + test containers
 	// so they can reach each other by container name without going through the host.
 	adbNetwork = "adbtest"
+
+	// apkContainerDir is the directory inside the Appium container where the APK is mounted.
+	apkContainerDir = "/apk"
 )
 
-// wdio spec-reporter output patterns, e.g. "4 passing (5.1s)", "1 failing".
+// wdio spec-reporter output patterns.
+// "4 passing (13.8s)" → group 1 = count, group 2 = seconds (optional).
 var (
-	rePassing = regexp.MustCompile(`(\d+) passing`)
+	rePassing = regexp.MustCompile(`(\d+) passing(?:\s+\((\d+(?:\.\d+)?)s\))?`)
 	reFailing = regexp.MustCompile(`(\d+) failing`)
 	rePending = regexp.MustCompile(`(\d+) pending`)
 )
@@ -54,6 +61,7 @@ type Config struct {
 	BasePort    int
 	ADBHost     string // hostname of ADB server, reachable from Appium containers
 	ADBPort     int
+	APKPath     string // absolute path to APK on the host; mounted into Appium containers
 }
 
 // deviceContainers tracks the pair of containers managed for one device.
@@ -62,20 +70,23 @@ type deviceContainers struct {
 	AppiumPort int
 	AppiumName string
 
-	TestID      string
-	TestStatus  string // "running" | "exited" | "created" | ""
-	DeviceModel string // ro.product.model, stored in container labels
+	TestID        string
+	TestStatus    string    // "running" | "exited" | "created" | ""
+	TestStartedAt time.Time // when the test container was created
+	DeviceModel   string    // ro.product.model, stored in container labels
 }
 
 // testRunSummary carries the parsed wdio result for one device/run.
 type testRunSummary struct {
-	Serial    string
-	Model     string
+	Serial     string
+	Model      string
+	StartedAt  time.Time // when the test container started
 	FinishedAt time.Time
-	Passing   int
-	Failing   int
-	Pending   int
-	Found     bool // false if container crashed before wdio produced any output
+	Passing    int
+	Failing    int
+	Pending    int
+	Found      bool    // false if container crashed before wdio produced any output
+	TestSecs   float64 // wdio test execution time in seconds (from "N passing (Xs)")
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -83,6 +94,25 @@ func (s testRunSummary) deviceLabel() string {
 		return fmt.Sprintf("%s (%s)", s.Serial, s.Model)
 	}
 	return s.Serial
+}
+
+// totalDuration returns the full container lifetime (setup + tests).
+func (s testRunSummary) totalDuration() time.Duration {
+	if s.StartedAt.IsZero() {
+		return 0
+	}
+	return s.FinishedAt.Sub(s.StartedAt)
+}
+
+// setupDuration returns the time spent on setup (session init + APK install),
+// computed as total - test execution.
+func (s testRunSummary) setupDuration() time.Duration {
+	total := s.totalDuration()
+	test := time.Duration(s.TestSecs * float64(time.Second))
+	if test > total {
+		return 0
+	}
+	return total - test
 }
 
 // Manager handles the lifecycle of Appium (and optionally test) Docker containers.
@@ -247,6 +277,10 @@ func (m *Manager) listManaged(ctx context.Context) (map[string]deviceContainers,
 		case roleTests:
 			dc.TestID = c.ID
 			dc.TestStatus = c.State // "running", "exited", etc.
+			if ts := c.Labels[labelStartedAt]; ts != "" {
+				t, _ := time.Parse(time.RFC3339, ts)
+				dc.TestStartedAt = t
+			}
 		}
 		result[serial] = dc
 	}
@@ -275,10 +309,6 @@ func (m *Manager) nextPort(existing map[string]deviceContainers) int {
 // container. Without host networking, Appium would forward device ports on the
 // host but then fail to connect to them because "localhost" inside the
 // container is the container itself, not the host.
-//
-// Host-network containers share the abstract Unix-socket namespace, so each
-// Xvfb instance must use a unique display number (derived from hostPort) to
-// avoid "Xvfb failed to start" when multiple devices are connected.
 func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int) (*deviceContainers, error) {
 	name := "appium-" + sanitize(dev.Serial)
 
@@ -317,6 +347,19 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 		NetworkMode: "host",
 	}
 
+	// Mount the local APK directory into the container so Appium can install
+	// the APK without downloading it from the internet.
+	if m.config.APKPath != "" {
+		hostCfg.Mounts = []mount.Mount{
+			{
+				Type:     mount.TypeBind,
+				Source:   filepath.Dir(m.config.APKPath),
+				Target:   apkContainerDir,
+				ReadOnly: true,
+			},
+		}
+	}
+
 	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
 		return nil, fmt.Errorf("create: %w", err)
@@ -337,20 +380,31 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 // createTest starts a test container that connects to Appium running on the host network.
 func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int) error {
 	name := "tests-" + sanitize(dev.Serial)
+	now := time.Now().UTC()
+
+	env := []string{
+		"ANDROID_SERIAL=" + dev.Serial,
+		// Appium runs on host network → reach it via host.docker.internal.
+		"APPIUM_HOST=host.docker.internal",
+		fmt.Sprintf("APPIUM_PORT=%d", appiumPort),
+	}
+
+	// Tell the test container where the APK lives inside the Appium container
+	// (same mount point). wdio.conf.js uses this to avoid downloading the APK.
+	if m.config.APKPath != "" {
+		apkInContainer := apkContainerDir + "/" + filepath.Base(m.config.APKPath)
+		env = append(env, "APIDEMOS_APK_PATH="+apkInContainer)
+	}
 
 	cfg := &container.Config{
 		Image: m.config.TestImage,
-		Env: []string{
-			"ANDROID_SERIAL=" + dev.Serial,
-			// Appium runs on host network → reach it via host.docker.internal.
-			"APPIUM_HOST=host.docker.internal",
-			fmt.Sprintf("APPIUM_PORT=%d", appiumPort),
-		},
+		Env:   env,
 		Labels: map[string]string{
-			labelManaged: "true",
-			labelDevice:  dev.Serial,
-			labelRole:    roleTests,
-			labelModel:   dev.Model,
+			labelManaged:   "true",
+			labelDevice:    dev.Serial,
+			labelRole:      roleTests,
+			labelModel:     dev.Model,
+			labelStartedAt: now.Format(time.RFC3339),
 		},
 	}
 
@@ -390,6 +444,7 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 	summary := testRunSummary{
 		Serial:     serial,
 		Model:      dc.DeviceModel,
+		StartedAt:  dc.TestStartedAt,
 		FinishedAt: time.Now(),
 	}
 
@@ -415,6 +470,10 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 		if ms := rePassing.FindStringSubmatch(line); ms != nil {
 			summary.Passing, _ = strconv.Atoi(ms[1])
 			summary.Found = true
+			if ms[2] != "" {
+				secs, _ := strconv.ParseFloat(ms[2], 64)
+				summary.TestSecs = secs
+			}
 		}
 		if ms := reFailing.FindStringSubmatch(line); ms != nil {
 			summary.Failing, _ = strconv.Atoi(ms[1])
@@ -437,6 +496,12 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 		log.Printf("[report] %s  %s", verdict, summary.deviceLabel())
 		log.Printf("[report]        passing: %d | failing: %d | pending: %d",
 			summary.Passing, summary.Failing, summary.Pending)
+		if total := summary.totalDuration(); total > 0 {
+			log.Printf("[report]        total: %s  setup: %s  tests: %.1fs",
+				total.Round(time.Second),
+				summary.setupDuration().Round(time.Second),
+				summary.TestSecs)
+		}
 	}
 	log.Printf("[report] %s", sep)
 	return summary
@@ -465,6 +530,20 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 
 	log.Printf("[reboot] %s ready after %s", summary.deviceLabel(), bootDuration.Round(time.Second))
 	m.writeFileReport(summary, bootDuration, rebootAt, true)
+}
+
+// fmtDuration formats a duration as "1m 5s" or "45s".
+func fmtDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm %ds", m, s)
 }
 
 // writeFileReport appends a structured entry to reports/YYYY-MM-DD.log.
@@ -502,6 +581,13 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 			verdict, summary.Passing, summary.Failing, summary.Pending)
 	}
 
+	if total := summary.totalDuration(); total > 0 {
+		fmt.Fprintf(f, "Timing:  total: %s  |  setup: %s  |  tests: %.1fs\n",
+			fmtDuration(total),
+			fmtDuration(summary.setupDuration()),
+			summary.TestSecs)
+	}
+
 	if bootOK {
 		readyAt := rebootAt.Add(bootDuration)
 		fmt.Fprintf(f, "Reboot:  %s  (started: %s, ready: %s)\n",
@@ -520,15 +606,17 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 	// Also persist to SQLite if a store is configured.
 	if m.store != nil {
 		run := store.Run{
-			Serial:      summary.Serial,
-			Model:       summary.Model,
-			FinishedAt:  summary.FinishedAt,
-			Passing:     summary.Passing,
-			Failing:     summary.Failing,
-			Pending:     summary.Pending,
-			Found:       summary.Found,
-			BootOK:      bootOK,
-			BootSeconds: bootDuration.Seconds(),
+			Serial:       summary.Serial,
+			Model:        summary.Model,
+			FinishedAt:   summary.FinishedAt,
+			Passing:      summary.Passing,
+			Failing:      summary.Failing,
+			Pending:      summary.Pending,
+			Found:        summary.Found,
+			BootOK:       bootOK,
+			BootSeconds:  bootDuration.Seconds(),
+			TotalSeconds: summary.totalDuration().Seconds(),
+			TestSeconds:  summary.TestSecs,
 		}
 		if err := m.store.Insert(run); err != nil {
 			log.Printf("[report] sqlite insert: %v", err)

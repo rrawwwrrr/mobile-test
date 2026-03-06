@@ -22,6 +22,16 @@ type Server struct {
 func NewServer(s *store.Store) *Server {
 	srv := &Server{store: s}
 	srv.tmpl = template.Must(template.New("dashboard").Funcs(template.FuncMap{
+		"fmtSecs": func(secs float64) string {
+			if secs <= 0 {
+				return "—"
+			}
+			s := int(secs)
+			if s < 60 {
+				return strconv.Itoa(s) + "s"
+			}
+			return strconv.Itoa(s/60) + "m " + strconv.Itoa(s%60) + "s"
+		},
 		"bootTime": func(r store.Run) string {
 			if !r.BootOK {
 				return "—"
@@ -32,6 +42,7 @@ func NewServer(s *store.Store) *Server {
 			}
 			return strconv.Itoa(secs/60) + "m " + strconv.Itoa(secs%60) + "s"
 		},
+		"sub":          func(a, b float64) float64 { return a - b },
 		"limitOptions": func() []int { return []int{50, 100, 200, 500} },
 	}).Parse(dashboardHTML))
 	return srv
@@ -173,6 +184,8 @@ tr:hover td{background:#1a1d27}
   <th>Passing</th>
   <th>Failing</th>
   <th>Pending</th>
+  <th>Setup</th>
+  <th>Tests</th>
   <th>Boot</th>
 </tr>
 </thead>
@@ -196,6 +209,8 @@ tr:hover td{background:#1a1d27}
   <td style="color:#86efac">{{if .Found}}{{.Passing}}{{else}}—{{end}}</td>
   <td style="color:{{if gt .Failing 0}}#f87171{{else}}#64748b{{end}}">{{if .Found}}{{.Failing}}{{else}}—{{end}}</td>
   <td style="color:#64748b">{{if .Found}}{{.Pending}}{{else}}—{{end}}</td>
+  <td style="color:#94a3b8" title="Session init + APK install">{{fmtSecs (sub .TotalSeconds .TestSeconds)}}</td>
+  <td style="color:#94a3b8" title="Actual test execution">{{fmtSecs .TestSeconds}}</td>
   <td class="{{if .BootOK}}boot-ok{{else}}boot-fail{{end}}">{{bootTime .}}</td>
 </tr>
 {{end}}

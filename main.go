@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -48,6 +51,46 @@ func envOrBool(key string) bool {
 	return false
 }
 
+// ensureAPK downloads the APK from url to path if the file doesn't already exist.
+func ensureAPK(path, url string) error {
+	if _, err := os.Stat(path); err == nil {
+		log.Printf("[apk] using cached %s", path)
+		return nil
+	}
+	if url == "" {
+		return fmt.Errorf("APK not found at %s and no --apk-url provided", path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	log.Printf("[apk] downloading %s → %s", url, path)
+	resp, err := http.Get(url) //nolint:noctx
+	if err != nil {
+		return fmt.Errorf("get: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("write: %w", err)
+	}
+	f.Close()
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename: %w", err)
+	}
+	log.Printf("[apk] saved to %s", path)
+	return nil
+}
+
 func main() {
 	// Environment variables serve as defaults; CLI flags override them.
 	//
@@ -64,6 +107,10 @@ func main() {
 	//   ADBTEST_RESTART_ADB – Restart ADB on all interfaces  (1/true/yes)
 	//   ADBTEST_HTTP_ADDR   – HTTP dashboard listen address  (default: :8080)
 	//   ADBTEST_DB          – SQLite database path           (default: reports/adbtest.db)
+	//   ADBTEST_APK         – Local APK file path            (default: apk/ApiDemos-debug.apk)
+	//   ADBTEST_APK_URL     – URL to download APK if missing (default: github release)
+
+	const defaultAPKURL = "https://github.com/appium/android-apidemos/releases/download/v6.0.6/ApiDemos-debug.apk"
 
 	var (
 		watch      = flag.Bool("watch", envOrBool("ADBTEST_WATCH"), "Continuously watch for device changes [$ADBTEST_WATCH]")
@@ -79,6 +126,10 @@ func main() {
 		// Test runner options.
 		testImage    = flag.String("test-image", envOr("TEST_IMAGE", ""), "Docker image for test containers; empty = no tests [$TEST_IMAGE]")
 		testBuildCtx = flag.String("test-build", envOr("TEST_BUILD_CONTEXT", ""), "Build test image from this directory before starting [$TEST_BUILD_CONTEXT]")
+
+		// APK options.
+		apkPath = flag.String("apk", envOr("ADBTEST_APK", "apk/ApiDemos-debug.apk"), "Local APK file path; downloaded from --apk-url if missing [$ADBTEST_APK]")
+		apkURL  = flag.String("apk-url", envOr("ADBTEST_APK_URL", defaultAPKURL), "URL to download APK when --apk file is missing [$ADBTEST_APK_URL]")
 
 		// Dashboard options.
 		httpAddr = flag.String("http-addr", envOr("ADBTEST_HTTP_ADDR", ":8080"), "HTTP dashboard listen address [$ADBTEST_HTTP_ADDR]")
@@ -108,6 +159,15 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
+	// Ensure APK is available locally (download if needed).
+	absAPK, err := filepath.Abs(*apkPath)
+	if err != nil {
+		log.Fatalf("APK path: %v", err)
+	}
+	if err := ensureAPK(absAPK, *apkURL); err != nil {
+		log.Fatalf("APK: %v", err)
+	}
+
 	// Open SQLite store.
 	st, err := store.Open(*dbPath)
 	if err != nil {
@@ -130,6 +190,7 @@ func main() {
 		BasePort:    *basePort,
 		ADBHost:     *adbHost,
 		ADBPort:     *adbPort,
+		APKPath:     absAPK,
 	}
 	mgr := docker.NewManager(cli, cfg, st)
 

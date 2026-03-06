@@ -9,9 +9,10 @@ const appiumHost = process.env.APPIUM_HOST || 'localhost';
 const appiumPort = parseInt(process.env.APPIUM_PORT || '4723', 10);
 const deviceSerial = process.env.ANDROID_SERIAL || '';
 
-// Appium downloads the APK by URL directly into the Appium container —
-// no need to share files between the test container and the Appium container.
-const apkUrl = process.env.APIDEMOS_APK_URL ||
+// APK path inside the Appium container (mounted from host by adbtest).
+// Falls back to URL download if the local path is not provided.
+const apkApp = process.env.APIDEMOS_APK_PATH ||
+  process.env.APIDEMOS_APK_URL ||
   'https://github.com/appium/android-apidemos/releases/download/v6.0.6/ApiDemos-debug.apk';
 
 exports.config = {
@@ -31,7 +32,7 @@ exports.config = {
       'appium:deviceName': deviceSerial,
       'appium:udid': deviceSerial,
       'appium:automationName': 'UiAutomator2',
-      'appium:app': apkUrl,
+      'appium:app': apkApp,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
       // Don't clear app data (pm clear is denied on Realme without root),
