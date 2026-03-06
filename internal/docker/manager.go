@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -41,9 +39,6 @@ const (
 	// adbNetwork is a dedicated bridge network shared by appium + test containers
 	// so they can reach each other by container name without going through the host.
 	adbNetwork = "adbtest"
-
-	// apkContainerDir is the directory inside the Appium container where the APK is mounted.
-	apkContainerDir = "/apk"
 )
 
 // wdio spec-reporter output patterns.
@@ -61,7 +56,9 @@ type Config struct {
 	BasePort    int
 	ADBHost     string // hostname of ADB server, reachable from Appium containers
 	ADBPort     int
-	APKPath     string // absolute path to APK on the host; mounted into Appium containers
+	APKServeURL string // HTTP URL of the APK served by the built-in web server
+	             //   e.g. "http://localhost:8080/apk/ApiDemos-debug.apk"
+	             // Appium containers use --network=host so localhost resolves to the host.
 }
 
 // deviceContainers tracks the pair of containers managed for one device.
@@ -344,20 +341,9 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 	hostCfg := &container.HostConfig{
 		// Host networking: the container shares the host's network stack.
 		// adb forward ports appear on 127.0.0.1 and Appium can reach them.
+		// It also means Appium can reach the built-in HTTP server on localhost
+		// to download the APK (no volume mounts needed).
 		NetworkMode: "host",
-	}
-
-	// Mount the local APK directory into the container so Appium can install
-	// the APK without downloading it from the internet.
-	if m.config.APKPath != "" {
-		hostCfg.Mounts = []mount.Mount{
-			{
-				Type:     mount.TypeBind,
-				Source:   filepath.Dir(m.config.APKPath),
-				Target:   apkContainerDir,
-				ReadOnly: true,
-			},
-		}
 	}
 
 	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
@@ -389,11 +375,11 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 		fmt.Sprintf("APPIUM_PORT=%d", appiumPort),
 	}
 
-	// Tell the test container where the APK lives inside the Appium container
-	// (same mount point). wdio.conf.js uses this to avoid downloading the APK.
-	if m.config.APKPath != "" {
-		apkInContainer := apkContainerDir + "/" + filepath.Base(m.config.APKPath)
-		env = append(env, "APIDEMOS_APK_PATH="+apkInContainer)
+	// Pass the APK URL so wdio.conf.js tells Appium where to fetch the APK.
+	// Appium runs with --network=host and downloads the APK from the built-in
+	// HTTP server (localhost) without any internet access.
+	if m.config.APKServeURL != "" {
+		env = append(env, "APIDEMOS_APK_URL="+m.config.APKServeURL)
 	}
 
 	cfg := &container.Config{

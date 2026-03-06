@@ -54,6 +54,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/runs", s.handleAPIRuns)
 }
 
+// ServeAPKDir registers a file server for the APK directory at /apk/.
+// Appium containers running with --network=host can fetch the APK via
+// http://localhost:<port>/apk/<filename> without any volume mounts.
+func (s *Server) ServeAPKDir(mux *http.ServeMux, dir string) {
+	mux.Handle("/apk/", http.StripPrefix("/apk/", http.FileServer(http.Dir(dir))))
+	log.Printf("[apk] serving %s at /apk/", dir)
+}
+
 type dashboardData struct {
 	Runs    []store.Run
 	Devices []string

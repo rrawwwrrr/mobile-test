@@ -184,13 +184,17 @@ func main() {
 	}
 	defer cli.Close()
 
+	// Build the URL where Appium can fetch the APK.
+	// Appium containers use --network=host, so "localhost" resolves to the host.
+	apkServeURL := fmt.Sprintf("http://localhost%s/apk/%s", *httpAddr, filepath.Base(absAPK))
+
 	cfg := docker.Config{
 		AppiumImage: *appiumImage,
 		TestImage:   *testImage,
 		BasePort:    *basePort,
 		ADBHost:     *adbHost,
 		ADBPort:     *adbPort,
-		APKPath:     absAPK,
+		APKServeURL: apkServeURL,
 	}
 	mgr := docker.NewManager(cli, cfg, st)
 
@@ -216,10 +220,11 @@ func main() {
 		}
 	}
 
-	// Start HTTP dashboard.
+	// Start HTTP dashboard + APK file server.
 	webSrv := web.NewServer(st)
 	mux := http.NewServeMux()
 	webSrv.RegisterRoutes(mux)
+	webSrv.ServeAPKDir(mux, filepath.Dir(absAPK))
 	httpServer := &http.Server{Addr: *httpAddr, Handler: mux}
 	go func() {
 		log.Printf("Dashboard listening on http://%s", *httpAddr)
