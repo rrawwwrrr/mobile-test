@@ -34,9 +34,7 @@ exports.config = {
       'appium:app': apkUrl,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
-      // Don't clear app data or uninstall (avoids pm clear permission errors),
-      // but always force-restart the app so each session starts on the main screen.
-      'appium:noReset': true,
+      // Force-restart the app so each session starts on the main screen.
       'appium:forceAppLaunch': true,
       'appium:newCommandTimeout': 90,
       'appium:androidInstallTimeout': 120000,
