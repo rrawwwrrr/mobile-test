@@ -66,9 +66,10 @@ type Config struct {
 
 // deviceContainers tracks the pair of containers managed for one device.
 type deviceContainers struct {
-	AppiumID   string
-	AppiumPort int
-	AppiumName string
+	AppiumID     string
+	AppiumPort   int
+	AppiumName   string
+	AppiumStatus string // "running" | "exited" | "created" | ""
 
 	TestID        string
 	TestStatus    string    // "running" | "exited" | "created" | ""
@@ -166,8 +167,20 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 		dc, running := existing[serial]
 
 		// --- Appium container ---
-		if !running || dc.AppiumID == "" {
-			port := m.nextPort(existing)
+		appiumExited := dc.AppiumID != "" && dc.AppiumStatus != "running"
+		if !running || dc.AppiumID == "" || appiumExited {
+			if appiumExited {
+				log.Printf("[restart] appium exited for %s, removing and restarting", serial)
+				// Remove the exited appium container before creating a new one.
+				_ = m.cli.ContainerRemove(ctx, dc.AppiumID, container.RemoveOptions{Force: true})
+				dc.AppiumID = ""
+				dc.AppiumStatus = ""
+			}
+
+			port := dc.AppiumPort
+			if port == 0 {
+				port = m.nextPort(existing)
+			}
 			log.Printf("[create] appium for device %s on host port %d", serial, port)
 
 			newDC, err := m.createAppium(ctx, dev, port)
@@ -175,7 +188,12 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 				log.Printf("[create] appium for %s: %v", serial, err)
 				continue
 			}
-			dc = *newDC
+			// Update only Appium fields; preserve test container fields.
+			dc.AppiumID = newDC.AppiumID
+			dc.AppiumPort = newDC.AppiumPort
+			dc.AppiumName = newDC.AppiumName
+			dc.AppiumStatus = newDC.AppiumStatus
+			dc.DeviceModel = newDC.DeviceModel
 			existing[serial] = dc
 		} else {
 			log.Printf("[skip] appium already running for %s (port %d)", serial, dc.AppiumPort)
@@ -280,6 +298,7 @@ func (m *Manager) listManaged(ctx context.Context) (map[string]deviceContainers,
 			dc.AppiumID = c.ID
 			dc.AppiumPort = port
 			dc.AppiumName = name
+			dc.AppiumStatus = c.State // "running", "exited", etc.
 		case roleTests:
 			dc.TestID = c.ID
 			dc.TestStatus = c.State // "running", "exited", etc.
@@ -340,7 +359,7 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 		// for Android/UiAutomator2, which talks to the device over ADB, not X11.
 		// The image ENTRYPOINT is ["sh","-c"], so Cmd[0] is the shell script.
 		Cmd: []string{fmt.Sprintf(
-			`appium --log /var/log/appium.log --port %d --address 0.0.0.0 --allow-insecure=adb_shell`,
+			`appium --log /var/log/appium.log --port %d --address 0.0.0.0 --allow-insecure=uiautomator2:adb_shell`,
 			hostPort,
 		)},
 		Labels: map[string]string{
@@ -371,9 +390,11 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 
 	log.Printf("[appium] started %s (id=%s, host-network) → port %d", name, resp.ID[:12], hostPort)
 	return &deviceContainers{
-		AppiumID:   resp.ID,
-		AppiumPort: hostPort,
-		AppiumName: name,
+		AppiumID:     resp.ID,
+		AppiumPort:   hostPort,
+		AppiumName:   name,
+		AppiumStatus: "running",
+		DeviceModel:  dev.Model,
 	}, nil
 }
 
