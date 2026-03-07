@@ -213,10 +213,15 @@ func main() {
 		}
 	}
 
-	// Optionally pull the Appium image.
+	// Optionally pull Docker images before starting.
 	if *pullImage {
 		if err := mgr.PullImage(ctx, *appiumImage); err != nil {
-			log.Fatalf("Pull image: %v", err)
+			log.Fatalf("Pull appium image: %v", err)
+		}
+		if cfg.TestImage != "" {
+			if err := mgr.PullImage(ctx, cfg.TestImage); err != nil {
+				log.Fatalf("Pull test image: %v", err)
+			}
 		}
 	}
 
