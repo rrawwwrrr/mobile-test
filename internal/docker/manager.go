@@ -340,7 +340,7 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 		// for Android/UiAutomator2, which talks to the device over ADB, not X11.
 		// The image ENTRYPOINT is ["sh","-c"], so Cmd[0] is the shell script.
 		Cmd: []string{fmt.Sprintf(
-			`appium --log /var/log/appium.log --port %d --address 0.0.0.0`,
+			`appium --log /var/log/appium.log --port %d --address 0.0.0.0 --allow-insecure=adb_shell`,
 			hostPort,
 		)},
 		Labels: map[string]string{

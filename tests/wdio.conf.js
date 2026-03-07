@@ -65,9 +65,42 @@ exports.config = {
   logLevel: 'info',
 
   async before() {
-    // Press Home to dismiss any system overlay (crash dialogs, setup wizards, etc.)
-    // that would block interactions, then bring the app back to the foreground.
-    // keycode 3 = KEYCODE_HOME
+    // Grant SYSTEM_ALERT_WINDOW to Appium packages from within the session.
+    // This runs AFTER Appium has installed/verified its helper apps, so the
+    // permission is not lost due to package reinstallation.
+    // Requires --allow-insecure=adb_shell on the Appium server.
+    const appiumPkgs = [
+      'io.appium.settings',
+      'io.appium.uiautomator2.server',
+      'io.appium.uiautomator2.server.test',
+    ];
+    for (const pkg of appiumPkgs) {
+      try {
+        await driver.execute('mobile: shell', {
+          command: 'appops',
+          args: ['set', pkg, 'SYSTEM_ALERT_WINDOW', 'allow'],
+        });
+        console.log(`[before] granted SYSTEM_ALERT_WINDOW to ${pkg}`);
+      } catch (e) {
+        console.warn(`[before] appops set ${pkg}: ${e.message}`);
+      }
+    }
+
+    // Dismiss any "display over other apps" / permission dialog still visible.
+    // Tries both English and Russian button labels used by different ROM versions.
+    try {
+      const allow = await driver.$(
+        '//*[@text="Allow" or @text="Разрешить" or @text="ALLOW" or @text="РАЗРЕШИТЬ"]'
+      );
+      if (await allow.isDisplayed()) {
+        console.log('[before] dismissing permission dialog');
+        await allow.click();
+        await driver.pause(500);
+      }
+    } catch (e) { /* no dialog visible, that's fine */ }
+
+    // Press Home to dismiss any remaining system overlays, then bring the app
+    // back to the foreground. keycode 3 = KEYCODE_HOME
     try {
       await driver.pressKeyCode(3);
       await driver.activateApp('io.appium.android.apis');
