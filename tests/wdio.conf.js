@@ -74,5 +74,13 @@ exports.config = {
     } catch (e) {
       console.warn('[before] HOME/activate failed:', e.message);
     }
+
+    // Verify the app is actually in the foreground before tests start.
+    // getCurrentActivity() returns something like "io.appium.android.apis/.ApiDemos".
+    const activity = await driver.getCurrentActivity();
+    console.log(`[before] current activity: ${activity}`);
+    if (!activity.includes('io.appium.android.apis')) {
+      throw new Error(`ApiDemos is not in foreground (got: ${activity})`);
+    }
   },
 };
