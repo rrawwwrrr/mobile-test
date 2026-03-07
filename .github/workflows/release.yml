@@ -63,18 +63,18 @@ jobs:
 
           ls -lh dist/
 
-      - name: Build .deb package (linux/amd64)
-        run: |
-          # Extract the linux/amd64 binary for deb packaging
-          tar -xzf dist/adbtest-linux-amd64.tar.gz -C dist/
-          BINARY=dist/adbtest-linux-amd64 bash packaging/build-deb.sh
-          mv adbtest_*.deb dist/
-
       - name: Download APK
         run: |
           APK_URL="https://github.com/appium/android-apidemos/releases/download/v6.0.6/ApiDemos-debug.apk"
           wget -q -O dist/ApiDemos-debug.apk "$APK_URL"
           echo "APK size: $(du -sh dist/ApiDemos-debug.apk | cut -f1)"
+
+      - name: Build .deb package (linux/amd64)
+        run: |
+          # Extract the linux/amd64 binary for deb packaging
+          tar -xzf dist/adbtest-linux-amd64.tar.gz -C dist/
+          BINARY=dist/adbtest-linux-amd64 APK=dist/ApiDemos-debug.apk bash packaging/build-deb.sh
+          mv adbtest_*.deb dist/
 
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
@@ -147,24 +147,22 @@ jobs:
           body: |
             ## Установка через .deb (рекомендуется)
 
+            APK уже включён в пакет — дополнительно ничего скачивать не нужно.
+
             ```bash
             BASE="https://github.com/rrawwwrrr/mobile-test/releases/download/${{ github.ref_name }}"
 
-            # 1. Скачать и установить пакет
+            # 1. Скачать и установить пакет (APK внутри)
             wget "$BASE/adbtest_${{ github.ref_name }}_amd64.deb"
             sudo dpkg -i adbtest_${{ github.ref_name }}_amd64.deb
 
-            # 2. Скачать APK (или скопируй вручную если нет интернета)
-            sudo mkdir -p /var/lib/adbtest/apk
-            sudo wget -O /var/lib/adbtest/apk/ApiDemos-debug.apk "$BASE/ApiDemos-debug.apk"
-
-            # 3. Отредактировать конфиг (образы Docker и т.д.)
+            # 2. Отредактировать конфиг (образы Docker и т.д.)
             sudo nano /etc/default/adbtest
 
-            # 4. Запустить сервис
+            # 3. Запустить сервис
             sudo systemctl start adbtest
 
-            # 5. Логи
+            # 4. Логи
             journalctl -u adbtest -f
             ```
 
