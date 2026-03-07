@@ -70,6 +70,12 @@ jobs:
           BINARY=dist/adbtest-linux-amd64 bash packaging/build-deb.sh
           mv adbtest_*.deb dist/
 
+      - name: Download APK
+        run: |
+          APK_URL="https://github.com/appium/android-apidemos/releases/download/v6.0.6/ApiDemos-debug.apk"
+          wget -q -O dist/ApiDemos-debug.apk "$APK_URL"
+          echo "APK size: $(du -sh dist/ApiDemos-debug.apk | cut -f1)"
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -142,19 +148,23 @@ jobs:
             ## Установка через .deb (рекомендуется)
 
             ```bash
-            wget https://github.com/rrawwwrrr/adbtest/releases/download/${{ github.ref_name }}/adbtest_${{ github.ref_name }}_amd64.deb
+            BASE="https://github.com/rrawwwrrr/mobile-test/releases/download/${{ github.ref_name }}"
+
+            # 1. Скачать и установить пакет
+            wget "$BASE/adbtest_${{ github.ref_name }}_amd64.deb"
             sudo dpkg -i adbtest_${{ github.ref_name }}_amd64.deb
 
-            # Отредактируй конфиг (TEST_IMAGE, APK и т.д.)
+            # 2. Скачать APK (или скопируй вручную если нет интернета)
+            sudo mkdir -p /var/lib/adbtest/apk
+            sudo wget -O /var/lib/adbtest/apk/ApiDemos-debug.apk "$BASE/ApiDemos-debug.apk"
+
+            # 3. Отредактировать конфиг (образы Docker и т.д.)
             sudo nano /etc/default/adbtest
 
-            # Скопируй APK если нет интернета
-            sudo cp ApiDemos-debug.apk /var/lib/adbtest/apk/
-
-            # Запусти сервис
+            # 4. Запустить сервис
             sudo systemctl start adbtest
 
-            # Логи
+            # 5. Логи
             journalctl -u adbtest -f
             ```
 
