@@ -35,10 +35,10 @@ exports.config = {
       'appium:app': apkApp,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
-      // Don't clear app data (pm clear is denied on Realme without root),
-      // but always force-restart the app so each session starts on the main screen.
-      'appium:noReset': true,
+      // Always force-restart the app so each session starts on the main screen.
       'appium:forceAppLaunch': true,
+      // Automatically grant all runtime permissions so no permission dialogs block tests.
+      'appium:autoGrantPermissions': true,
       'appium:newCommandTimeout': 90,
       'appium:androidInstallTimeout': 120000,
       // UiAutomator2 server install can be slow on first run — give it more time.
