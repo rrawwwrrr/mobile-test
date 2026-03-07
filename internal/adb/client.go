@@ -118,10 +118,10 @@ func WaitForReady(serial string, timeout time.Duration) (time.Duration, error) {
 	return time.Since(start), fmt.Errorf("device %s not ready after %v", serial, timeout)
 }
 
-// GrantAppiumPermissions pre-grants SYSTEM_ALERT_WINDOW to Appium helper
-// packages so Android does not show the "display over other apps" permission
-// dialog during test execution. Errors are silently ignored — the packages may
-// not be installed on the very first run (Appium installs them during its first
+// GrantAppiumPermissions pre-grants SYSTEM_ALERT_WINDOW and POST_NOTIFICATIONS
+// to Appium helper packages so Android does not show permission dialogs during
+// test execution. Errors are silently ignored — the packages may not be
+// installed on the very first run (Appium installs them during its first
 // session); from the second run onwards the permission will already be set.
 func GrantAppiumPermissions(serial string) {
 	pkgs := []string{
@@ -135,6 +135,11 @@ func GrantAppiumPermissions(serial string) {
 			"appops", "set", pkg, "SYSTEM_ALERT_WINDOW", "allow").Run(); err == nil {
 			granted++
 		}
+		// POST_NOTIFICATIONS (Android 13+): suppresses the lock screen
+		// notification permission dialog shown by Appium Settings.
+		// Silently ignored on older API levels where the permission doesn't exist.
+		_ = exec.Command("adb", "-s", serial, "shell",
+			"pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS").Run()
 	}
 	if granted > 0 {
 		log.Printf("[appium] granted SYSTEM_ALERT_WINDOW to %d package(s) on %s", granted, serial)

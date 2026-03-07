@@ -84,13 +84,21 @@ exports.config = {
       } catch (e) {
         console.warn(`[before] appops set ${pkg}: ${e.message}`);
       }
+      // POST_NOTIFICATIONS (Android 13+): suppresses the lock screen
+      // notification permission dialog shown by Appium Settings.
+      try {
+        await driver.execute('mobile: shell', {
+          command: 'pm',
+          args: ['grant', pkg, 'android.permission.POST_NOTIFICATIONS'],
+        });
+      } catch (e) { /* pre-Android 13, permission doesn't exist */ }
     }
 
     // Dismiss any "display over other apps" / permission dialog still visible.
     // Tries both English and Russian button labels used by different ROM versions.
     try {
       const allow = await driver.$(
-        '//*[@text="Allow" or @text="Разрешить" or @text="ALLOW" or @text="РАЗРЕШИТЬ"]'
+        '//*[@text="Allow" or @text="Разрешить" or @text="ALLOW" or @text="РАЗРЕШИТЬ" or @text="Да" or @text="ДА"]'
       );
       if (await allow.isDisplayed()) {
         console.log('[before] dismissing permission dialog');
