@@ -21,7 +21,10 @@ echo "Building ${PKG}.deb ..."
 # Создаём структуру пакета
 rm -rf "${PKG}"
 install -Dm755 "${BINARY}"                         "${PKG}/usr/local/bin/adbtest"
-install -Dm644 packaging/adbtest.env               "${PKG}/etc/default/adbtest"
+# Подставляем версию в TEST_IMAGE (latest → vX.Y.Z)
+sed "s|rrawwwrrr/adbtest-tests:latest|rrawwwrrr/adbtest-tests:v${VERSION}|g" \
+    packaging/adbtest.env > "${PKG}/etc/default/adbtest"
+chmod 644 "${PKG}/etc/default/adbtest"
 install -Dm644 packaging/adbtest.service           "${PKG}/etc/systemd/system/adbtest.service"
 install -dm755                                     "${PKG}/var/lib/adbtest/apk"
 install -dm755                                     "${PKG}/var/lib/adbtest/reports/logs"

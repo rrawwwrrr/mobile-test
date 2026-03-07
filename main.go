@@ -22,6 +22,10 @@ import (
 	dockerclient "github.com/docker/docker/client"
 )
 
+// version is injected at build time via -ldflags "-X main.version=vX.Y.Z".
+// Falls back to "dev" for local builds.
+var version = "dev"
+
 // envOr returns the value of the environment variable if set, otherwise the fallback.
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -91,6 +95,15 @@ func ensureAPK(path, url string) error {
 	return nil
 }
 
+// defaultTestImage returns the versioned test image for release builds,
+// or empty string for dev builds (tests disabled unless --test-image is passed).
+func defaultTestImage() string {
+	if version == "dev" {
+		return ""
+	}
+	return "rrawwwrrr/adbtest-tests:" + version
+}
+
 func main() {
 	// Environment variables serve as defaults; CLI flags override them.
 	//
@@ -124,7 +137,9 @@ func main() {
 		adbPort  = flag.Int("adb-port", envOrInt("ADB_PORT", 5037), "ADB server port [$ADB_PORT]")
 
 		// Test runner options.
-		testImage    = flag.String("test-image", envOr("TEST_IMAGE", ""), "Docker image for test containers; empty = no tests [$TEST_IMAGE]")
+		// Default test image uses the release version tag so the binary and
+		// the test image are always in sync. Falls back to empty on dev builds.
+		testImage    = flag.String("test-image", envOr("TEST_IMAGE", defaultTestImage()), "Docker image for test containers; empty = no tests [$TEST_IMAGE]")
 		testBuildCtx = flag.String("test-build", envOr("TEST_BUILD_CONTEXT", ""), "Build test image from this directory before starting [$TEST_BUILD_CONTEXT]")
 
 		// APK options.
