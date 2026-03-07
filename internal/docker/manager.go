@@ -382,6 +382,11 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 	name := "tests-" + sanitize(dev.Serial)
 	now := time.Now().UTC()
 
+	// Remove any orphaned container with the same name (can happen after
+	// process restarts when the old container was not cleaned up properly).
+	// Errors are ignored — the container may not exist.
+	_ = m.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+
 	// Grant Appium overlay permissions — suppresses the "display over other
 	// apps" dialog that can block tests. Best-effort: silently skipped if
 	// Appium hasn't installed its helper packages yet (first-ever run).

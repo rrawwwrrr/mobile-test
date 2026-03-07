@@ -109,11 +109,20 @@ exports.config = {
     }
 
     // Verify the app is actually in the foreground before tests start.
-    // getCurrentActivity() returns something like "io.appium.android.apis/.ApiDemos".
-    const activity = await driver.getCurrentActivity();
-    console.log(`[before] current activity: ${activity}`);
+    // Retries up to 3 times with 1s delay — after pm clear / forceAppLaunch
+    // the activity may not be ready immediately.
+    let activity = '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      activity = await driver.getCurrentActivity();
+      console.log(`[before] current activity (attempt ${attempt}): ${activity}`);
+      if (activity.includes('io.appium.android.apis')) break;
+      if (attempt < 3) {
+        await driver.pause(1000);
+        await driver.activateApp('io.appium.android.apis');
+      }
+    }
     if (!activity.includes('io.appium.android.apis')) {
-      throw new Error(`ApiDemos is not in foreground (got: ${activity})`);
+      throw new Error(`ApiDemos is not in foreground after 3 attempts (got: ${activity})`);
     }
   },
 };
