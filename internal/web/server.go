@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"adbtest/internal/store"
 )
@@ -29,9 +30,9 @@ func NewServer(s *store.Store) *Server {
 			}
 			s := int(secs)
 			if s < 60 {
-				return strconv.Itoa(s) + "s"
+				return strconv.Itoa(s) + "с"
 			}
-			return strconv.Itoa(s/60) + "m " + strconv.Itoa(s%60) + "s"
+			return strconv.Itoa(s/60) + "м " + strconv.Itoa(s%60) + "с"
 		},
 		"bootTime": func(r store.Run) string {
 			if !r.BootOK {
@@ -39,9 +40,9 @@ func NewServer(s *store.Store) *Server {
 			}
 			secs := int(r.BootSeconds)
 			if secs < 60 {
-				return strconv.Itoa(secs) + "s"
+				return strconv.Itoa(secs) + "с"
 			}
-			return strconv.Itoa(secs/60) + "m " + strconv.Itoa(secs%60) + "s"
+			return strconv.Itoa(secs/60) + "м " + strconv.Itoa(secs%60) + "с"
 		},
 		"sub":          func(a, b float64) float64 { return a - b },
 		"printf":       fmt.Sprintf,
@@ -64,12 +65,37 @@ func (s *Server) ServeAPKDir(mux *http.ServeMux, dir string) {
 	log.Printf("[apk] serving %s at /apk/", dir)
 }
 
+// ServeLogsDir registers a file server for the logs directory at /logs/.
+func (s *Server) ServeLogsDir(mux *http.ServeMux, dir string) {
+	mux.Handle("/logs/", http.StripPrefix("/logs/", http.FileServer(http.Dir(dir))))
+	log.Printf("[logs] serving %s at /logs/", dir)
+}
+
 type dashboardData struct {
 	Runs    []store.Run
 	Stats   []store.DeviceStats
 	Devices []string
 	Serial  string
 	Limit   int
+	Period  string // "today" | "yesterday" | "7d" | "30d" | "" (all)
+}
+
+// periodBounds converts a period string to from/to time bounds.
+func periodBounds(period string) (from, to time.Time) {
+	now := time.Now()
+	today := now.Truncate(24 * time.Hour)
+	switch period {
+	case "today":
+		from = today
+	case "yesterday":
+		from = today.AddDate(0, 0, -1)
+		to = today
+	case "7d":
+		from = now.AddDate(0, 0, -7)
+	case "30d":
+		from = now.AddDate(0, 0, -30)
+	}
+	return
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -77,15 +103,19 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	serial := r.URL.Query().Get("serial")
+	q := r.URL.Query()
+	serial := q.Get("serial")
+	period := q.Get("period")
 	limit := defaultLimit
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
 	}
 
-	runs, err := s.store.List(serial, limit)
+	from, to := periodBounds(period)
+
+	runs, err := s.store.List(serial, limit, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -95,7 +125,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	stats, err := s.store.Stats()
+	stats, err := s.store.Stats(from, to)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -108,20 +138,24 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Devices: devices,
 		Serial:  serial,
 		Limit:   limit,
+		Period:  period,
 	}); err != nil {
 		log.Printf("[web] template error: %v", err)
 	}
 }
 
 func (s *Server) handleAPIRuns(w http.ResponseWriter, r *http.Request) {
-	serial := r.URL.Query().Get("serial")
+	q := r.URL.Query()
+	serial := q.Get("serial")
+	period := q.Get("period")
 	limit := defaultLimit
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
 	}
-	runs, err := s.store.List(serial, limit)
+	from, to := periodBounds(period)
+	runs, err := s.store.List(serial, limit, from, to)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -131,12 +165,12 @@ func (s *Server) handleAPIRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 const dashboardHTML = `<!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
-<title>adbtest — test results</title>
+<title>adbtest — результаты тестов</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
@@ -167,30 +201,37 @@ tr:hover td{background:#1a1d27}
 <body>
 <header>
   <h1>📱 adbtest</h1>
-  <span>auto-refresh every 60s</span>
+  <span>обновление каждые 60с</span>
 </header>
 
 <div class="toolbar">
   <form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <select name="serial" onchange="this.form.submit()">
-      <option value="" {{if eq .Serial ""}}selected{{end}}>All devices</option>
+      <option value="" {{if eq .Serial ""}}selected{{end}}>Все устройства</option>
       {{range .Devices}}
       <option value="{{.}}" {{if eq . $.Serial}}selected{{end}}>{{.}}</option>
       {{end}}
     </select>
+    <select name="period" onchange="this.form.submit()">
+      <option value=""          {{if eq .Period ""}}selected{{end}}>Всё время</option>
+      <option value="today"     {{if eq .Period "today"}}selected{{end}}>Сегодня</option>
+      <option value="yesterday" {{if eq .Period "yesterday"}}selected{{end}}>Вчера</option>
+      <option value="7d"        {{if eq .Period "7d"}}selected{{end}}>7 дней</option>
+      <option value="30d"       {{if eq .Period "30d"}}selected{{end}}>30 дней</option>
+    </select>
     <select name="limit" onchange="this.form.submit()">
       {{range $n := limitOptions}}
-      <option value="{{$n}}" {{if eq $n $.Limit}}selected{{end}}>Last {{$n}}</option>
+      <option value="{{$n}}" {{if eq $n $.Limit}}selected{{end}}>Последние {{$n}}</option>
       {{end}}
     </select>
-    {{if .Serial}}<a href="/" style="color:#a5b4fc;font-size:.85rem;text-decoration:none">✕ clear filter</a>{{end}}
+    {{if .Serial}}<a href="/" style="color:#a5b4fc;font-size:.85rem;text-decoration:none">✕ сбросить фильтр</a>{{end}}
   </form>
-  <span class="count">{{len .Runs}} rows</span>
+  <span class="count">{{len .Runs}} записей</span>
 </div>
 
 {{if .Stats}}
 <div style="padding:0 24px 24px">
-<h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Device summary</h2>
+<h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Сводка по устройствам</h2>
 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
 {{range .Stats}}
 <div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">
@@ -201,32 +242,32 @@ tr:hover td{background:#1a1d27}
     </div>
     <div style="text-align:right">
       {{if eq .FailedRuns 0}}
-        <span class="badge pass">{{.TotalRuns}} runs</span>
+        <span class="badge pass">{{.TotalRuns}} прогонов</span>
       {{else}}
-        <span class="badge fail">{{.FailedRuns}}/{{.TotalRuns}} failed</span>
+        <span class="badge fail">{{.FailedRuns}}/{{.TotalRuns}} упало</span>
       {{end}}
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
     <div style="background:#0f1117;border-radius:6px;padding:10px">
-      <div style="font-size:.7rem;color:#64748b;margin-bottom:4px">TESTS FAILED</div>
+      <div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УПАЛО ТЕСТОВ</div>
       <div style="font-size:1.1rem;font-weight:600;color:{{if gt .TotalFail 0}}#f87171{{else}}#86efac{{end}}">
         {{.TotalFail}}<span style="font-size:.75rem;font-weight:400;color:#64748b"> / {{.TotalTests}}</span>
       </div>
     </div>
     <div style="background:#0f1117;border-radius:6px;padding:10px">
-      <div style="font-size:.7rem;color:#64748b;margin-bottom:4px">PASS RATE</div>
+      <div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УСПЕШНОСТЬ</div>
       <div style="font-size:1.1rem;font-weight:600;color:{{if lt (printf "%.0f" .PassRate) "80"}}#f87171{{else if lt (printf "%.0f" .PassRate) "100"}}#fbbf24{{else}}#86efac{{end}}">
         {{printf "%.0f" .PassRate}}%
       </div>
     </div>
   </div>
   <div style="background:#0f1117;border-radius:6px;padding:10px">
-    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">REBOOT TIME</div>
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>
     <div style="display:flex;justify-content:space-between;font-size:.8rem">
-      <span style="color:#64748b">avg <span style="color:#94a3b8;font-weight:600">{{fmtSecs .AvgBoot}}</span></span>
-      <span style="color:#64748b">min <span style="color:#86efac;font-weight:600">{{fmtSecs .MinBoot}}</span></span>
-      <span style="color:#64748b">max <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxBoot}}</span></span>
+      <span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">{{fmtSecs .AvgBoot}}</span></span>
+      <span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">{{fmtSecs .MinBoot}}</span></span>
+      <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxBoot}}</span></span>
     </div>
   </div>
 </div>
@@ -236,21 +277,22 @@ tr:hover td{background:#1a1d27}
 {{end}}
 
 {{if not .Runs}}
-<p class="empty">No test runs recorded yet.</p>
+<p class="empty">Результатов пока нет.</p>
 {{else}}
 <div style="overflow-x:auto">
 <table>
 <thead>
 <tr>
-  <th>Time</th>
-  <th>Device</th>
-  <th>Result</th>
-  <th>Passing</th>
-  <th>Failing</th>
-  <th>Pending</th>
-  <th>Setup</th>
-  <th>Tests</th>
-  <th>Boot</th>
+  <th>Время</th>
+  <th>Устройство</th>
+  <th>Итог</th>
+  <th>Прошло</th>
+  <th>Упало</th>
+  <th>Ожидает</th>
+  <th>Подготовка</th>
+  <th>Тесты</th>
+  <th>Перезагрузка</th>
+  <th>Логи</th>
 </tr>
 </thead>
 <tbody>
@@ -263,19 +305,25 @@ tr:hover td{background:#1a1d27}
   </td>
   <td>
     {{if not .Found}}
-      <span class="badge na">N/A</span>
+      <span class="badge na">Н/Д</span>
     {{else if gt .Failing 0}}
-      <span class="badge fail">FAIL</span>
+      <span class="badge fail">УПАЛ</span>
     {{else}}
-      <span class="badge pass">PASS</span>
+      <span class="badge pass">ПРОШЁЛ</span>
     {{end}}
   </td>
   <td style="color:#86efac">{{if .Found}}{{.Passing}}{{else}}—{{end}}</td>
   <td style="color:{{if gt .Failing 0}}#f87171{{else}}#64748b{{end}}">{{if .Found}}{{.Failing}}{{else}}—{{end}}</td>
   <td style="color:#64748b">{{if .Found}}{{.Pending}}{{else}}—{{end}}</td>
-  <td style="color:#94a3b8" title="Session init + APK install">{{fmtSecs (sub .TotalSeconds .TestSeconds)}}</td>
-  <td style="color:#94a3b8" title="Actual test execution">{{fmtSecs .TestSeconds}}</td>
+  <td style="color:#94a3b8" title="Инициализация сессии + установка APK">{{fmtSecs (sub .TotalSeconds .TestSeconds)}}</td>
+  <td style="color:#94a3b8" title="Выполнение тестов">{{fmtSecs .TestSeconds}}</td>
   <td class="{{if .BootOK}}boot-ok{{else}}boot-fail{{end}}">{{bootTime .}}</td>
+  <td>
+    {{if .HasLogs}}
+    <a href="/logs/{{.ID}}/test.log"   download="test-{{.ID}}.log"   style="color:#a5b4fc;font-size:.75rem;text-decoration:none;margin-right:6px" title="Скачать лог тестов">⬇ тест</a>
+    <a href="/logs/{{.ID}}/appium.log" download="appium-{{.ID}}.log" style="color:#94a3b8;font-size:.75rem;text-decoration:none" title="Скачать лог Appium">⬇ appium</a>
+    {{else}}—{{end}}
+  </td>
 </tr>
 {{end}}
 </tbody>

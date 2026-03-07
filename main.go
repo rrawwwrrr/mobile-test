@@ -225,6 +225,7 @@ func main() {
 	mux := http.NewServeMux()
 	webSrv.RegisterRoutes(mux)
 	webSrv.ServeAPKDir(mux, filepath.Dir(absAPK))
+	webSrv.ServeLogsDir(mux, "reports/logs")
 	httpServer := &http.Server{Addr: *httpAddr, Handler: mux}
 	go func() {
 		log.Printf("Dashboard listening on http://%s", *httpAddr)

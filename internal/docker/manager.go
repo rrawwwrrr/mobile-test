@@ -84,6 +84,8 @@ type testRunSummary struct {
 	Pending    int
 	Found      bool    // false if container crashed before wdio produced any output
 	TestSecs   float64 // wdio test execution time in seconds (from "N passing (Xs)")
+	TestLog    []byte  // raw wdio output (saved to disk on failure)
+	AppiumLog  []byte  // raw appium output (saved to disk on failure)
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -449,6 +451,24 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 	if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil {
 		_, _ = io.Copy(&buf, rc)
 	}
+	summary.TestLog = buf.Bytes()
+
+	// Capture Appium container logs (last 2000 lines to keep file size reasonable).
+	if dc.AppiumID != "" {
+		arc, err := m.cli.ContainerLogs(ctx, dc.AppiumID, container.LogsOptions{
+			ShowStdout: true,
+			ShowStderr: true,
+			Tail:       "2000",
+		})
+		if err == nil {
+			var abuf bytes.Buffer
+			if _, err := stdcopy.StdCopy(&abuf, &abuf, arc); err != nil {
+				_, _ = io.Copy(&abuf, arc)
+			}
+			arc.Close()
+			summary.AppiumLog = abuf.Bytes()
+		}
+	}
 
 	scanner := bufio.NewScanner(&buf)
 	for scanner.Scan() {
@@ -604,9 +624,44 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 			TotalSeconds: summary.totalDuration().Seconds(),
 			TestSeconds:  summary.TestSecs,
 		}
-		if err := m.store.Insert(run); err != nil {
+		id, err := m.store.Insert(run)
+		if err != nil {
 			log.Printf("[report] sqlite insert: %v", err)
+		} else if !summary.Found || summary.Failing > 0 {
+			// Save logs for failed or crashed runs.
+			m.saveLogs(id, summary)
 		}
+	}
+}
+
+// saveLogs writes test and appium logs to reports/logs/<id>/ and marks the
+// run in the database as having logs available.
+func (m *Manager) saveLogs(runID int64, summary testRunSummary) {
+	dir := fmt.Sprintf("reports/logs/%d", runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[logs] mkdir %s: %v", dir, err)
+		return
+	}
+	wrote := false
+	if len(summary.TestLog) > 0 {
+		if err := os.WriteFile(dir+"/test.log", summary.TestLog, 0o644); err != nil {
+			log.Printf("[logs] write test.log: %v", err)
+		} else {
+			wrote = true
+		}
+	}
+	if len(summary.AppiumLog) > 0 {
+		if err := os.WriteFile(dir+"/appium.log", summary.AppiumLog, 0o644); err != nil {
+			log.Printf("[logs] write appium.log: %v", err)
+		} else {
+			wrote = true
+		}
+	}
+	if wrote {
+		if err := m.store.SetHasLogs(runID); err != nil {
+			log.Printf("[logs] set has_logs: %v", err)
+		}
+		log.Printf("[logs] saved to %s/", dir)
 	}
 }
 

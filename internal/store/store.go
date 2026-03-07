@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS runs (
 	boot_ok       INTEGER NOT NULL DEFAULT 0,
 	boot_seconds  REAL    NOT NULL DEFAULT 0,
 	total_seconds REAL    NOT NULL DEFAULT 0,
-	test_seconds  REAL    NOT NULL DEFAULT 0
+	test_seconds  REAL    NOT NULL DEFAULT 0,
+	has_logs      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_serial   ON runs(serial);
 CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
@@ -31,8 +32,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
 
 // migrations adds columns to existing databases that predate the current schema.
 var migrations = []string{
-	`ALTER TABLE runs ADD COLUMN total_seconds REAL NOT NULL DEFAULT 0`,
-	`ALTER TABLE runs ADD COLUMN test_seconds  REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN total_seconds REAL    NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN test_seconds  REAL    NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN has_logs      INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Run holds the result of one test cycle for one device.
@@ -49,6 +51,7 @@ type Run struct {
 	BootSeconds  float64
 	TotalSeconds float64
 	TestSeconds  float64
+	HasLogs      bool
 }
 
 // Verdict returns "PASS", "FAIL", or "N/A".
@@ -99,9 +102,9 @@ func Open(path string) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// Insert saves a test run to the database.
-func (s *Store) Insert(r Run) error {
-	_, err := s.db.Exec(`
+// Insert saves a test run to the database and returns the new row ID.
+func (s *Store) Insert(r Run) (int64, error) {
+	res, err := s.db.Exec(`
 		INSERT INTO runs
 		  (serial, model, finished_at, passing, failing, pending, found, boot_ok,
 		   boot_seconds, total_seconds, test_seconds)
@@ -118,27 +121,43 @@ func (s *Store) Insert(r Run) error {
 		r.TotalSeconds,
 		r.TestSeconds,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// SetHasLogs marks a run as having saved log files.
+func (s *Store) SetHasLogs(id int64) error {
+	_, err := s.db.Exec(`UPDATE runs SET has_logs=1 WHERE id=?`, id)
 	return err
 }
 
 // List returns the most recent `limit` runs (newest first).
 // If serial is non-empty, only runs for that device are returned.
-func (s *Store) List(serial string, limit int) ([]Run, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if serial == "" {
-		rows, err = s.db.Query(`
-			SELECT id, serial, model, finished_at, passing, failing, pending, found,
-			       boot_ok, boot_seconds, total_seconds, test_seconds
-			FROM runs ORDER BY finished_at DESC LIMIT ?`, limit)
-	} else {
-		rows, err = s.db.Query(`
-			SELECT id, serial, model, finished_at, passing, failing, pending, found,
-			       boot_ok, boot_seconds, total_seconds, test_seconds
-			FROM runs WHERE serial = ? ORDER BY finished_at DESC LIMIT ?`, serial, limit)
+// from/to are optional time bounds on finished_at (zero value = no bound).
+func (s *Store) List(serial string, limit int, from, to time.Time) ([]Run, error) {
+	query := `
+		SELECT id, serial, model, finished_at, passing, failing, pending, found,
+		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs
+		FROM runs WHERE 1=1`
+	var args []any
+	if serial != "" {
+		query += ` AND serial = ?`
+		args = append(args, serial)
 	}
+	if !from.IsZero() {
+		query += ` AND finished_at >= ?`
+		args = append(args, from.UTC().Format(time.RFC3339))
+	}
+	if !to.IsZero() {
+		query += ` AND finished_at <= ?`
+		args = append(args, to.UTC().Format(time.RFC3339))
+	}
+	query += ` ORDER BY finished_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -176,8 +195,9 @@ func (s DeviceStats) DeviceLabel() string {
 }
 
 // Stats returns per-device aggregated statistics, ordered by most recent run.
-func (s *Store) Stats() ([]DeviceStats, error) {
-	rows, err := s.db.Query(`
+// from/to are optional time bounds on finished_at (zero value = no bound).
+func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
+	query := `
 		SELECT
 			serial,
 			MAX(model) AS model,
@@ -188,9 +208,19 @@ func (s *Store) Stats() ([]DeviceStats, error) {
 			AVG(CASE WHEN boot_ok=1 THEN boot_seconds END) AS avg_boot,
 			MIN(CASE WHEN boot_ok=1 THEN boot_seconds END) AS min_boot,
 			MAX(CASE WHEN boot_ok=1 THEN boot_seconds END) AS max_boot
-		FROM runs
-		GROUP BY serial
-		ORDER BY MAX(finished_at) DESC`)
+		FROM runs WHERE 1=1`
+	var args []any
+	if !from.IsZero() {
+		query += ` AND finished_at >= ?`
+		args = append(args, from.UTC().Format(time.RFC3339))
+	}
+	if !to.IsZero() {
+		query += ` AND finished_at <= ?`
+		args = append(args, to.UTC().Format(time.RFC3339))
+	}
+	query += ` GROUP BY serial ORDER BY MAX(finished_at) DESC`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +249,7 @@ func (s *Store) Stats() ([]DeviceStats, error) {
 // Devices returns all unique serial numbers that have runs, ordered by most recent.
 func (s *Store) Devices() ([]string, error) {
 	rows, err := s.db.Query(`
-		SELECT DISTINCT serial FROM runs ORDER BY MAX(finished_at) DESC`)
+		SELECT serial FROM runs GROUP BY serial ORDER BY MAX(finished_at) DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -240,12 +270,13 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 	for rows.Next() {
 		var r Run
 		var finishedAt string
-		var found, bootOK int
+		var found, bootOK, hasLogs int
 		if err := rows.Scan(
 			&r.ID, &r.Serial, &r.Model, &finishedAt,
 			&r.Passing, &r.Failing, &r.Pending,
 			&found, &bootOK,
 			&r.BootSeconds, &r.TotalSeconds, &r.TestSeconds,
+			&hasLogs,
 		); err != nil {
 			return nil, err
 		}
@@ -253,6 +284,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		r.FinishedAt = t.Local()
 		r.Found = found != 0
 		r.BootOK = bootOK != 0
+		r.HasLogs = hasLogs != 0
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
