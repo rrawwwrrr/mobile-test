@@ -6,7 +6,10 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"adbtest/internal/store"
@@ -14,15 +17,53 @@ import (
 
 const defaultLimit = 200
 
+// Hub broadcasts refresh signals to all connected SSE clients.
+type Hub struct {
+	mu      sync.Mutex
+	clients map[chan struct{}]struct{}
+}
+
+// NewHub creates a new Hub.
+func NewHub() *Hub {
+	return &Hub{clients: make(map[chan struct{}]struct{})}
+}
+
+func (h *Hub) subscribe() chan struct{} {
+	ch := make(chan struct{}, 1)
+	h.mu.Lock()
+	h.clients[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch
+}
+
+func (h *Hub) unsubscribe(ch chan struct{}) {
+	h.mu.Lock()
+	delete(h.clients, ch)
+	h.mu.Unlock()
+}
+
+// Notify sends a refresh signal to all connected SSE clients.
+func (h *Hub) Notify() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.clients {
+		select {
+		case ch <- struct{}{}:
+		default: // drop if client is slow
+		}
+	}
+}
+
 // Server serves the HTTP dashboard.
 type Server struct {
 	store *store.Store
+	hub   *Hub
 	tmpl  *template.Template
 }
 
 // NewServer creates a new Server.
-func NewServer(s *store.Store) *Server {
-	srv := &Server{store: s}
+func NewServer(s *store.Store, hub *Hub) *Server {
+	srv := &Server{store: s, hub: hub}
 	srv.tmpl = template.Must(template.New("dashboard").Funcs(template.FuncMap{
 		"fmtSecs": func(secs float64) string {
 			if secs <= 0 {
@@ -51,15 +92,16 @@ func NewServer(s *store.Store) *Server {
 	return srv
 }
 
-// RegisterRoutes attaches routes to mux (pass nil for http.DefaultServeMux).
+// RegisterRoutes attaches routes to mux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleDashboard)
 	mux.HandleFunc("/api/runs", s.handleAPIRuns)
+	mux.HandleFunc("/api/stats", s.handleAPIStats)
+	mux.HandleFunc("/api/log", s.handleAPILog)
+	mux.HandleFunc("/events", s.handleEvents)
 }
 
 // ServeAPKDir registers a file server for the APK directory at /apk/.
-// Appium containers running with --network=host can fetch the APK via
-// http://localhost:<port>/apk/<filename> without any volume mounts.
 func (s *Server) ServeAPKDir(mux *http.ServeMux, dir string) {
 	mux.Handle("/apk/", http.StripPrefix("/apk/", http.FileServer(http.Dir(dir))))
 	log.Printf("[apk] serving %s at /apk/", dir)
@@ -71,13 +113,65 @@ func (s *Server) ServeLogsDir(mux *http.ServeMux, dir string) {
 	log.Printf("[logs] serving %s at /logs/", dir)
 }
 
+// handleEvents streams Server-Sent Events refresh signals to the client.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+	ch := s.hub.subscribe()
+	defer s.hub.unsubscribe(ch)
+
+	// Initial event confirms the connection is alive.
+	fmt.Fprintf(w, "data: connected\n\n")
+	flusher.Flush()
+
+	for {
+		select {
+		case <-ch:
+			fmt.Fprintf(w, "data: refresh\n\n")
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// handleAPILog serves a single log file as plain text.
+// Query params: id (run ID), type ("test" or "appium").
+func (s *Server) handleAPILog(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	typ := r.URL.Query().Get("type")
+	if id == "" || (typ != "test" && typ != "appium") {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// Validate id is numeric to prevent path traversal.
+	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	path := filepath.Join("reports", "logs", id, typ+".log")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(data)
+}
+
 type dashboardData struct {
 	Runs    []store.Run
 	Stats   []store.DeviceStats
 	Devices []string
 	Serial  string
 	Limit   int
-	Period  string // "today" | "yesterday" | "7d" | "30d" | "" (all)
+	Period  string
 }
 
 // periodBounds converts a period string to from/to time bounds.
@@ -164,24 +258,32 @@ func (s *Server) handleAPIRuns(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(runs)
 }
 
+func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
+	period := r.URL.Query().Get("period")
+	from, to := periodBounds(period)
+	stats, err := s.store.Stats(from, to)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="60">
 <title>adbtest — результаты тестов</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
 header{background:#1a1d27;border-bottom:1px solid #2d3148;padding:16px 24px;display:flex;align-items:center;gap:16px}
 header h1{font-size:1.2rem;font-weight:600;color:#a5b4fc}
-header span{font-size:.8rem;color:#64748b}
 .toolbar{padding:16px 24px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-select,button{background:#1e2235;color:#e2e8f0;border:1px solid #2d3148;border-radius:6px;padding:6px 12px;font-size:.85rem;cursor:pointer}
-select:focus,button:focus{outline:2px solid #a5b4fc;outline-offset:2px}
-button{background:#3730a3;border-color:#4338ca}
-button:hover{background:#4338ca}
+select{background:#1e2235;color:#e2e8f0;border:1px solid #2d3148;border-radius:6px;padding:6px 12px;font-size:.85rem;cursor:pointer}
+select:focus{outline:2px solid #a5b4fc;outline-offset:2px}
 .count{font-size:.8rem;color:#64748b;margin-left:auto}
 table{width:100%;border-collapse:collapse}
 th{background:#1a1d27;color:#94a3b8;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;padding:10px 16px;text-align:left;position:sticky;top:0;border-bottom:1px solid #2d3148}
@@ -196,13 +298,51 @@ tr:hover td{background:#1a1d27}
 .boot-ok{color:#86efac}
 .boot-fail{color:#f87171}
 .empty{text-align:center;padding:64px;color:#64748b}
+.log-btn{background:#1e2235;color:#a5b4fc;border:1px solid #3730a3;border-radius:4px;padding:3px 8px;font-size:.75rem;cursor:pointer;margin-right:4px;font-family:inherit}
+.log-btn:hover{background:#3730a3}
+.log-btn.ab{color:#94a3b8;border-color:#2d3148}
+.log-btn.ab:hover{background:#2d3148}
+.log-btn.sc{color:#fbbf24;border-color:#92400e}
+.log-btn.sc:hover{background:#92400e}
+/* Modal */
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+#mbox{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;width:100%;max-width:1100px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+#mhdr{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid #2d3148;flex-shrink:0;gap:12px}
+#mtitle{font-size:.95rem;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mtabs{display:flex;gap:6px;flex-shrink:0}
+.mtab{background:transparent;border:1px solid #2d3148;color:#64748b;border-radius:6px;padding:4px 12px;font-size:.8rem;cursor:pointer;font-family:inherit}
+.mtab.on{background:#3730a3;border-color:#4338ca;color:#e2e8f0}
+.mclose{background:transparent;border:1px solid #2d3148;color:#64748b;border-radius:6px;padding:4px 10px;font-size:.8rem;cursor:pointer;font-family:inherit}
+.mclose:hover{background:#450a0a;border-color:#ef4444;color:#fca5a5}
+#mbody{flex:1;overflow:auto;padding:20px}
+#mscr{max-width:100%;border-radius:8px;margin-bottom:16px;display:block;border:1px solid #2d3148}
+#mpre{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:.78rem;line-height:1.6;color:#94a3b8;white-space:pre;word-break:keep-all;margin:0}
 </style>
 </head>
 <body>
 <header>
   <h1>📱 adbtest</h1>
-  <span>обновление каждые 60с</span>
+  <span id="cst" style="font-size:.8rem;color:#64748b">⏳ подключение...</span>
 </header>
+
+<!-- Log modal -->
+<div id="modal" style="display:none" onclick="if(event.target===this)closeModal()">
+<div id="mbox">
+  <div id="mhdr">
+    <span id="mtitle">Лог</span>
+    <div class="mtabs">
+      <button id="btn-t" class="mtab on" onclick="switchLog('test')">тест</button>
+      <button id="btn-a" class="mtab"    onclick="switchLog('appium')">appium</button>
+      <button id="btn-s" class="mtab"    onclick="switchLog('screenshot')" style="display:none">📷 скрин</button>
+      <button class="mclose" onclick="closeModal()">✕ закрыть</button>
+    </div>
+  </div>
+  <div id="mbody">
+    <img id="mscr" src="" alt="" onerror="this.style.display='none'">
+    <pre id="mpre">Загрузка...</pre>
+  </div>
+</div>
+</div>
 
 <div class="toolbar">
   <form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -224,15 +364,15 @@ tr:hover td{background:#1a1d27}
       <option value="{{$n}}" {{if eq $n $.Limit}}selected{{end}}>Последние {{$n}}</option>
       {{end}}
     </select>
-    {{if .Serial}}<a href="/" style="color:#a5b4fc;font-size:.85rem;text-decoration:none">✕ сбросить фильтр</a>{{end}}
+    {{if .Serial}}<a href="/" style="color:#a5b4fc;font-size:.85rem;text-decoration:none">✕ сбросить</a>{{end}}
   </form>
-  <span class="count">{{len .Runs}} записей</span>
+  <span class="count" id="rcount">{{len .Runs}} записей</span>
 </div>
 
-{{if .Stats}}
+<div id="spanel"{{if not .Stats}} style="display:none"{{end}}>
 <div style="padding:0 24px 24px">
 <h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Сводка по устройствам</h2>
-<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+<div id="sgrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
 {{range .Stats}}
 <div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
@@ -274,28 +414,17 @@ tr:hover td{background:#1a1d27}
 {{end}}
 </div>
 </div>
-{{end}}
+</div>
 
-{{if not .Runs}}
-<p class="empty">Результатов пока нет.</p>
-{{else}}
-<div style="overflow-x:auto">
+<p class="empty" id="emsg"{{if .Runs}} style="display:none"{{end}}>Результатов пока нет.</p>
+<div id="twrap" style="overflow-x:auto{{if not .Runs}};display:none{{end}}">
 <table>
-<thead>
-<tr>
-  <th>Время</th>
-  <th>Устройство</th>
-  <th>Итог</th>
-  <th>Прошло</th>
-  <th>Упало</th>
-  <th>Ожидает</th>
-  <th>Подготовка</th>
-  <th>Тесты</th>
-  <th>Перезагрузка</th>
-  <th>Логи</th>
-</tr>
-</thead>
-<tbody>
+<thead><tr>
+  <th>Время</th><th>Устройство</th><th>Итог</th>
+  <th>Прошло</th><th>Упало</th><th>Ожидает</th>
+  <th>Подготовка</th><th>Тесты</th><th>Перезагрузка</th><th>Логи</th>
+</tr></thead>
+<tbody id="tbody">
 {{range .Runs}}
 <tr>
   <td class="mono">{{.FinishedAt.Format "2006-01-02 15:04:05"}}</td>
@@ -304,31 +433,161 @@ tr:hover td{background:#1a1d27}
     {{if .Model}}<div class="device">{{.Model}}</div>{{end}}
   </td>
   <td>
-    {{if not .Found}}
-      <span class="badge na">Н/Д</span>
-    {{else if gt .Failing 0}}
-      <span class="badge fail">УПАЛ</span>
-    {{else}}
-      <span class="badge pass">ПРОШЁЛ</span>
-    {{end}}
+    {{if not .Found}}<span class="badge na">Н/Д</span>
+    {{else if gt .Failing 0}}<span class="badge fail">УПАЛ</span>
+    {{else}}<span class="badge pass">ПРОШЁЛ</span>{{end}}
   </td>
   <td style="color:#86efac">{{if .Found}}{{.Passing}}{{else}}—{{end}}</td>
   <td style="color:{{if gt .Failing 0}}#f87171{{else}}#64748b{{end}}">{{if .Found}}{{.Failing}}{{else}}—{{end}}</td>
   <td style="color:#64748b">{{if .Found}}{{.Pending}}{{else}}—{{end}}</td>
-  <td style="color:#94a3b8" title="Инициализация сессии + установка APK">{{fmtSecs (sub .TotalSeconds .TestSeconds)}}</td>
+  <td style="color:#94a3b8" title="Инициализация + установка APK">{{fmtSecs (sub .TotalSeconds .TestSeconds)}}</td>
   <td style="color:#94a3b8" title="Выполнение тестов">{{fmtSecs .TestSeconds}}</td>
   <td class="{{if .BootOK}}boot-ok{{else}}boot-fail{{end}}">{{bootTime .}}</td>
   <td>
     {{if .HasLogs}}
-    <a href="/logs/{{.ID}}/test.log"   download="test-{{.ID}}.log"   style="color:#a5b4fc;font-size:.75rem;text-decoration:none;margin-right:6px" title="Скачать лог тестов">⬇ тест</a>
-    <a href="/logs/{{.ID}}/appium.log" download="appium-{{.ID}}.log" style="color:#94a3b8;font-size:.75rem;text-decoration:none" title="Скачать лог Appium">⬇ appium</a>
-    {{else}}—{{end}}
+    <button class="log-btn"    onclick="openLog({{.ID}},'test')">тест</button>
+    <button class="log-btn ab" onclick="openLog({{.ID}},'appium')">appium</button>
+    {{end}}{{if .HasScreenshot}}<button class="log-btn sc" onclick="openScr({{.ID}})">📷 скрин</button>{{end}}
+    {{if not .HasLogs}}{{if not .HasScreenshot}}—{{end}}{{end}}
   </td>
 </tr>
 {{end}}
 </tbody>
 </table>
 </div>
-{{end}}
+
+<script>
+var _mid=null,_mtype=null;
+
+function p2(n){return String(n).padStart(2,'0')}
+function fmtD(iso){var d=new Date(iso);return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+' '+p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds())}
+function fmtS(s){if(!s||s<=0)return '—';s=Math.floor(s);return s<60?s+'с':Math.floor(s/60)+'м '+(s%60)+'с'}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+function renderTable(runs){
+  var rc=document.getElementById('rcount'),
+      em=document.getElementById('emsg'),
+      tw=document.getElementById('twrap'),
+      tb=document.getElementById('tbody');
+  rc.textContent=(runs?runs.length:0)+' записей';
+  if(!runs||!runs.length){tw.style.display='none';em.style.display='';return}
+  em.style.display='none';tw.style.display='';
+  tb.innerHTML=runs.map(function(r){
+    var setup=Math.max(0,(r.total_seconds||0)-(r.test_seconds||0));
+    var badge=!r.found?'<span class="badge na">Н/Д</span>':r.failing>0?'<span class="badge fail">УПАЛ</span>':'<span class="badge pass">ПРОШЁЛ</span>';
+    var fc=r.failing>0?'#f87171':'#64748b';
+    var bc=r.boot_ok?'boot-ok':'boot-fail';
+    var boot=r.boot_ok?fmtS(r.boot_seconds):'—';
+    var logs='';
+    if(r.has_logs)logs+='<button class="log-btn" onclick="openLog('+r.id+',\'test\')">тест</button><button class="log-btn ab" onclick="openLog('+r.id+',\'appium\')">appium</button>';
+    if(r.has_screenshot)logs+='<button class="log-btn sc" onclick="openScr('+r.id+')">📷 скрин</button>';
+    if(!logs)logs='—';
+    return '<tr>'+
+      '<td class="mono">'+fmtD(r.finished_at)+'</td>'+
+      '<td><div class="mono">'+esc(r.serial)+'</div>'+(r.model?'<div class="device">'+esc(r.model)+'</div>':'')+'</td>'+
+      '<td>'+badge+'</td>'+
+      '<td style="color:#86efac">'+(r.found?r.passing:'—')+'</td>'+
+      '<td style="color:'+fc+'">'+(r.found?r.failing:'—')+'</td>'+
+      '<td style="color:#64748b">'+(r.found?r.pending:'—')+'</td>'+
+      '<td style="color:#94a3b8">'+fmtS(setup)+'</td>'+
+      '<td style="color:#94a3b8">'+fmtS(r.test_seconds)+'</td>'+
+      '<td class="'+bc+'">'+boot+'</td>'+
+      '<td>'+logs+'</td>'+
+    '</tr>';
+  }).join('');
+}
+
+function renderStats(stats){
+  var sp=document.getElementById('spanel'),
+      sg=document.getElementById('sgrid');
+  if(!stats||!stats.length){sp.style.display='none';return}
+  sp.style.display='';
+  sg.innerHTML=stats.map(function(st){
+    var rate=st.total_tests?((st.total_tests-st.total_fail)/st.total_tests*100):0;
+    var rc=rate<80?'#f87171':rate<100?'#fbbf24':'#86efac';
+    var fc=st.total_fail>0?'#f87171':'#86efac';
+    var badge=st.failed_runs===0?'<span class="badge pass">'+st.total_runs+' прогонов</span>':'<span class="badge fail">'+st.failed_runs+'/'+st.total_runs+' упало</span>';
+    return '<div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">'+
+        '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+'</div>'+
+        '<div style="text-align:right">'+badge+'</div>'+
+      '</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'+
+        '<div style="background:#0f1117;border-radius:6px;padding:10px"><div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УПАЛО ТЕСТОВ</div><div style="font-size:1.1rem;font-weight:600;color:'+fc+'">'+st.total_fail+'<span style="font-size:.75rem;font-weight:400;color:#64748b"> / '+st.total_tests+'</span></div></div>'+
+        '<div style="background:#0f1117;border-radius:6px;padding:10px"><div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УСПЕШНОСТЬ</div><div style="font-size:1.1rem;font-weight:600;color:'+rc+'">'+rate.toFixed(0)+'%</div></div>'+
+      '</div>'+
+      '<div style="background:#0f1117;border-radius:6px;padding:10px">'+
+        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
+          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_boot)+'</span></span>'+
+          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_boot)+'</span></span>'+
+          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_boot)+'</span></span>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+async function refresh(){
+  var p=new URLSearchParams(window.location.search);
+  try{
+    var rs=await fetch('/api/runs?'+p), ss=await fetch('/api/stats?'+p);
+    if(rs.ok&&ss.ok){renderTable(await rs.json());renderStats(await ss.json())}
+  }catch(e){console.error('refresh:',e)}
+}
+
+// SSE — auto-reconnects built into EventSource
+(function(){
+  var st=document.getElementById('cst');
+  var es=new EventSource('/events');
+  es.onopen=function(){st.textContent='● онлайн';st.style.color='#86efac'};
+  es.onmessage=function(e){if(e.data==='refresh')refresh()};
+  es.onerror=function(){st.textContent='○ переподключение...';st.style.color='#f87171'};
+})();
+
+// Modal
+async function openLog(id,type){
+  _mid=id;_mtype=type;
+  document.getElementById('mtitle').textContent=(type==='test'?'Лог теста':'Лог Appium')+' #'+id;
+  document.getElementById('btn-t').className='mtab'+(type==='test'?' on':'');
+  document.getElementById('btn-a').className='mtab'+(type==='appium'?' on':'');
+  document.getElementById('btn-s').style.display='none';
+  var pre=document.getElementById('mpre'),scr=document.getElementById('mscr');
+  pre.style.display='';
+  pre.textContent='Загрузка...';
+  // Show screenshot at top if it exists
+  scr.style.display='block';
+  scr.src='/logs/'+id+'/screen.png';
+  document.getElementById('modal').style.display='flex';
+  try{
+    var r=await fetch('/api/log?id='+id+'&type='+type);
+    pre.textContent=r.ok?await r.text():'Ошибка '+r.status+': лог недоступен';
+  }catch(e){pre.textContent='Ошибка: '+e}
+  var b=document.getElementById('mbody');b.scrollTop=b.scrollHeight;
+}
+// Open screenshot-only view
+function openScr(id){
+  _mid=id;_mtype='screenshot';
+  document.getElementById('mtitle').textContent='Скриншот #'+id;
+  document.getElementById('btn-t').className='mtab';
+  document.getElementById('btn-a').className='mtab';
+  document.getElementById('btn-s').className='mtab on';
+  document.getElementById('btn-s').style.display='';
+  var pre=document.getElementById('mpre'),scr=document.getElementById('mscr');
+  pre.style.display='none';
+  pre.textContent='';
+  scr.style.display='block';
+  scr.src='/logs/'+id+'/screen.png';
+  scr.onerror=function(){pre.style.display='';pre.textContent='Скриншот недоступен';scr.style.display='none'};
+  document.getElementById('modal').style.display='flex';
+}
+function switchLog(t){
+  if(_mid===null)return;
+  if(t==='screenshot')openScr(_mid);
+  else openLog(_mid,t);
+}
+function closeModal(){document.getElementById('modal').style.display='none';document.getElementById('mscr').src=''}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()});
+</script>
 </body>
 </html>`

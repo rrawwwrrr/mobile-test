@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,9 +43,10 @@ const (
 )
 
 // wdio spec-reporter output patterns.
-// "4 passing (13.8s)" → group 1 = count, group 2 = seconds (optional).
+// "4 passing (13.8s)"    → group 1 = count, group 3 = seconds
+// "4 passing (1m 13.8s)" → group 1 = count, group 2 = minutes, group 3 = seconds
 var (
-	rePassing = regexp.MustCompile(`(\d+) passing(?:\s+\((\d+(?:\.\d+)?)s\))?`)
+	rePassing = regexp.MustCompile(`(\d+) passing(?:\s+\((?:(\d+)m\s*)?(\d+(?:\.\d+)?)s\))?`)
 	reFailing = regexp.MustCompile(`(\d+) failing`)
 	rePending = regexp.MustCompile(`(\d+) pending`)
 )
@@ -86,6 +88,7 @@ type testRunSummary struct {
 	TestSecs   float64 // wdio test execution time in seconds (from "N passing (Xs)")
 	TestLog    []byte  // raw wdio output (saved to disk on failure)
 	AppiumLog  []byte  // raw appium output (saved to disk on failure)
+	Screenshot []byte  // PNG screenshot taken before reboot on failure
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -119,6 +122,7 @@ type Manager struct {
 	cli       *client.Client
 	config    Config
 	store     *store.Store
+	NotifyFn  func()     // called after each run is saved; used for SSE push
 	rebooting sync.Map   // serial → struct{}: device is mid-reboot, skip test creation
 	reportMu  sync.Mutex // serialises writes to the daily report file
 }
@@ -476,8 +480,13 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 		if ms := rePassing.FindStringSubmatch(line); ms != nil {
 			summary.Passing, _ = strconv.Atoi(ms[1])
 			summary.Found = true
-			if ms[2] != "" {
-				secs, _ := strconv.ParseFloat(ms[2], 64)
+			// ms[2] = minutes (optional), ms[3] = seconds
+			if ms[3] != "" {
+				secs, _ := strconv.ParseFloat(ms[3], 64)
+				if ms[2] != "" {
+					mins, _ := strconv.Atoi(ms[2])
+					secs += float64(mins) * 60
+				}
 				summary.TestSecs = secs
 			}
 		}
@@ -487,6 +496,19 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 		}
 		if ms := rePending.FindStringSubmatch(line); ms != nil {
 			summary.Pending, _ = strconv.Atoi(ms[1])
+		}
+	}
+
+	// Take a screenshot before the device is rebooted (only on failure/crash).
+	if !summary.Found || summary.Failing > 0 {
+		sCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(sCtx, "adb", "-s", serial, "exec-out", "screencap", "-p")
+		if png, err := cmd.Output(); err == nil && len(png) > 0 {
+			summary.Screenshot = png
+			log.Printf("[screenshot] captured for %s (%d bytes)", serial, len(png))
+		} else if err != nil {
+			log.Printf("[screenshot] %s: %v", serial, err)
 		}
 	}
 
@@ -627,9 +649,15 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 		id, err := m.store.Insert(run)
 		if err != nil {
 			log.Printf("[report] sqlite insert: %v", err)
-		} else if !summary.Found || summary.Failing > 0 {
-			// Save logs for failed or crashed runs.
-			m.saveLogs(id, summary)
+		} else {
+			if !summary.Found || summary.Failing > 0 {
+				// Save logs (and screenshot) for failed or crashed runs.
+				m.saveLogs(id, summary)
+			}
+			// Notify SSE clients about the new run.
+			if m.NotifyFn != nil {
+				m.NotifyFn()
+			}
 		}
 	}
 }
@@ -655,6 +683,15 @@ func (m *Manager) saveLogs(runID int64, summary testRunSummary) {
 			log.Printf("[logs] write appium.log: %v", err)
 		} else {
 			wrote = true
+		}
+	}
+	if len(summary.Screenshot) > 0 {
+		if err := os.WriteFile(dir+"/screen.png", summary.Screenshot, 0o644); err != nil {
+			log.Printf("[logs] write screen.png: %v", err)
+		} else {
+			if err := m.store.SetHasScreenshot(runID); err != nil {
+				log.Printf("[logs] set has_screenshot: %v", err)
+			}
 		}
 	}
 	if wrote {

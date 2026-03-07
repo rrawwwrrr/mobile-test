@@ -226,7 +226,9 @@ func main() {
 	}
 
 	// Start HTTP dashboard + APK file server.
-	webSrv := web.NewServer(st)
+	hub := web.NewHub()
+	webSrv := web.NewServer(st, hub)
+	mgr.NotifyFn = hub.Notify
 	mux := http.NewServeMux()
 	webSrv.RegisterRoutes(mux)
 	webSrv.ServeAPKDir(mux, filepath.Dir(absAPK))

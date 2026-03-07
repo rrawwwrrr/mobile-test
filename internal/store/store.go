@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS runs (
 	boot_seconds  REAL    NOT NULL DEFAULT 0,
 	total_seconds REAL    NOT NULL DEFAULT 0,
 	test_seconds  REAL    NOT NULL DEFAULT 0,
-	has_logs      INTEGER NOT NULL DEFAULT 0
+	has_logs       INTEGER NOT NULL DEFAULT 0,
+	has_screenshot INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_serial   ON runs(serial);
 CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
@@ -32,26 +33,28 @@ CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
 
 // migrations adds columns to existing databases that predate the current schema.
 var migrations = []string{
-	`ALTER TABLE runs ADD COLUMN total_seconds REAL    NOT NULL DEFAULT 0`,
-	`ALTER TABLE runs ADD COLUMN test_seconds  REAL    NOT NULL DEFAULT 0`,
-	`ALTER TABLE runs ADD COLUMN has_logs      INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN total_seconds   REAL    NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN test_seconds    REAL    NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN has_logs        INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN has_screenshot  INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Run holds the result of one test cycle for one device.
 type Run struct {
-	ID           int64
-	Serial       string
-	Model        string
-	FinishedAt   time.Time
-	Passing      int
-	Failing      int
-	Pending      int
-	Found        bool
-	BootOK       bool
-	BootSeconds  float64
-	TotalSeconds float64
-	TestSeconds  float64
-	HasLogs      bool
+	ID           int64     `json:"id"`
+	Serial       string    `json:"serial"`
+	Model        string    `json:"model"`
+	FinishedAt   time.Time `json:"finished_at"`
+	Passing      int       `json:"passing"`
+	Failing      int       `json:"failing"`
+	Pending      int       `json:"pending"`
+	Found        bool      `json:"found"`
+	BootOK       bool      `json:"boot_ok"`
+	BootSeconds  float64   `json:"boot_seconds"`
+	TotalSeconds float64   `json:"total_seconds"`
+	TestSeconds  float64   `json:"test_seconds"`
+	HasLogs       bool `json:"has_logs"`
+	HasScreenshot bool `json:"has_screenshot"`
 }
 
 // Verdict returns "PASS", "FAIL", or "N/A".
@@ -133,13 +136,19 @@ func (s *Store) SetHasLogs(id int64) error {
 	return err
 }
 
+// SetHasScreenshot marks a run as having a saved screenshot.
+func (s *Store) SetHasScreenshot(id int64) error {
+	_, err := s.db.Exec(`UPDATE runs SET has_screenshot=1 WHERE id=?`, id)
+	return err
+}
+
 // List returns the most recent `limit` runs (newest first).
 // If serial is non-empty, only runs for that device are returned.
 // from/to are optional time bounds on finished_at (zero value = no bound).
 func (s *Store) List(serial string, limit int, from, to time.Time) ([]Run, error) {
 	query := `
 		SELECT id, serial, model, finished_at, passing, failing, pending, found,
-		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs
+		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs, has_screenshot
 		FROM runs WHERE 1=1`
 	var args []any
 	if serial != "" {
@@ -167,15 +176,15 @@ func (s *Store) List(serial string, limit int, from, to time.Time) ([]Run, error
 
 // DeviceStats holds aggregated statistics for one device.
 type DeviceStats struct {
-	Serial     string
-	Model      string
-	TotalRuns  int     // total number of completed test cycles
-	FailedRuns int     // cycles where at least one test failed
-	TotalTests int     // sum of passing + failing across all runs
-	TotalFail  int     // sum of failing tests across all runs
-	AvgBoot    float64 // average reboot time in seconds (successful reboots only)
-	MinBoot    float64
-	MaxBoot    float64
+	Serial     string  `json:"serial"`
+	Model      string  `json:"model"`
+	TotalRuns  int     `json:"total_runs"`  // total number of completed test cycles
+	FailedRuns int     `json:"failed_runs"` // cycles where at least one test failed
+	TotalTests int     `json:"total_tests"` // sum of passing + failing across all runs
+	TotalFail  int     `json:"total_fail"`  // sum of failing tests across all runs
+	AvgBoot    float64 `json:"avg_boot"`    // average reboot time in seconds (successful reboots only)
+	MinBoot    float64 `json:"min_boot"`
+	MaxBoot    float64 `json:"max_boot"`
 }
 
 // PassRate returns the percentage of passing tests (0–100).
@@ -270,13 +279,13 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 	for rows.Next() {
 		var r Run
 		var finishedAt string
-		var found, bootOK, hasLogs int
+		var found, bootOK, hasLogs, hasScreenshot int
 		if err := rows.Scan(
 			&r.ID, &r.Serial, &r.Model, &finishedAt,
 			&r.Passing, &r.Failing, &r.Pending,
 			&found, &bootOK,
 			&r.BootSeconds, &r.TotalSeconds, &r.TestSeconds,
-			&hasLogs,
+			&hasLogs, &hasScreenshot,
 		); err != nil {
 			return nil, err
 		}
@@ -285,6 +294,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		r.Found = found != 0
 		r.BootOK = bootOK != 0
 		r.HasLogs = hasLogs != 0
+		r.HasScreenshot = hasScreenshot != 0
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
