@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS runs (
 	total_seconds REAL    NOT NULL DEFAULT 0,
 	test_seconds  REAL    NOT NULL DEFAULT 0,
 	has_logs       INTEGER NOT NULL DEFAULT 0,
-	has_screenshot INTEGER NOT NULL DEFAULT 0
+	has_screenshot INTEGER NOT NULL DEFAULT 0,
+	battery_pct    INTEGER NOT NULL DEFAULT -1
 );
 CREATE INDEX IF NOT EXISTS idx_runs_serial   ON runs(serial);
 CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
@@ -37,6 +38,7 @@ var migrations = []string{
 	`ALTER TABLE runs ADD COLUMN test_seconds    REAL    NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN has_logs        INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN has_screenshot  INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN battery_pct     INTEGER NOT NULL DEFAULT -1`,
 }
 
 // Run holds the result of one test cycle for one device.
@@ -55,6 +57,7 @@ type Run struct {
 	TestSeconds  float64   `json:"test_seconds"`
 	HasLogs       bool `json:"has_logs"`
 	HasScreenshot bool `json:"has_screenshot"`
+	BatteryPct    int  `json:"battery_pct"` // battery level at test start; -1 = unknown
 }
 
 // Verdict returns "PASS", "FAIL", or "N/A".
@@ -110,8 +113,8 @@ func (s *Store) Insert(r Run) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO runs
 		  (serial, model, finished_at, passing, failing, pending, found, boot_ok,
-		   boot_seconds, total_seconds, test_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   boot_seconds, total_seconds, test_seconds, battery_pct)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Serial,
 		r.Model,
 		r.FinishedAt.UTC().Format(time.RFC3339),
@@ -123,6 +126,7 @@ func (s *Store) Insert(r Run) (int64, error) {
 		r.BootSeconds,
 		r.TotalSeconds,
 		r.TestSeconds,
+		r.BatteryPct,
 	)
 	if err != nil {
 		return 0, err
@@ -148,7 +152,7 @@ func (s *Store) SetHasScreenshot(id int64) error {
 func (s *Store) List(serial string, limit int, from, to time.Time) ([]Run, error) {
 	query := `
 		SELECT id, serial, model, finished_at, passing, failing, pending, found,
-		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs, has_screenshot
+		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs, has_screenshot, battery_pct
 		FROM runs WHERE 1=1`
 	var args []any
 	if serial != "" {
@@ -285,7 +289,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 			&r.Passing, &r.Failing, &r.Pending,
 			&found, &bootOK,
 			&r.BootSeconds, &r.TotalSeconds, &r.TestSeconds,
-			&hasLogs, &hasScreenshot,
+			&hasLogs, &hasScreenshot, &r.BatteryPct,
 		); err != nil {
 			return nil, err
 		}

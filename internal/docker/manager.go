@@ -33,6 +33,7 @@ const (
 	labelRole      = "adbtest.role"
 	labelModel     = "adbtest.model"
 	labelStartedAt = "adbtest.started_at" // RFC3339 timestamp when test container was created
+	labelBattery   = "adbtest.battery"    // battery % at test start (-1 = unknown)
 
 	roleAppium = "appium"
 	roleTests  = "tests"
@@ -73,6 +74,7 @@ type deviceContainers struct {
 	TestStatus    string    // "running" | "exited" | "created" | ""
 	TestStartedAt time.Time // when the test container was created
 	DeviceModel   string    // ro.product.model, stored in container labels
+	BatteryPct    int       // battery level at test start (-1 = unknown)
 }
 
 // testRunSummary carries the parsed wdio result for one device/run.
@@ -89,6 +91,7 @@ type testRunSummary struct {
 	TestLog    []byte  // raw wdio output (saved to disk on failure)
 	AppiumLog  []byte  // raw appium output (saved to disk on failure)
 	Screenshot []byte  // PNG screenshot taken before reboot on failure
+	BatteryPct int     // battery level at test start (-1 = unknown)
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -284,6 +287,11 @@ func (m *Manager) listManaged(ctx context.Context) (map[string]deviceContainers,
 				t, _ := time.Parse(time.RFC3339, ts)
 				dc.TestStartedAt = t
 			}
+			dc.BatteryPct = -1
+			if bp := c.Labels[labelBattery]; bp != "" {
+				n, _ := strconv.Atoi(bp)
+				dc.BatteryPct = n
+			}
 		}
 		result[serial] = dc
 	}
@@ -374,6 +382,24 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 	name := "tests-" + sanitize(dev.Serial)
 	now := time.Now().UTC()
 
+	// Grant Appium overlay permissions — suppresses the "display over other
+	// apps" dialog that can block tests. Best-effort: silently skipped if
+	// Appium hasn't installed its helper packages yet (first-ever run).
+	adb.GrantAppiumPermissions(dev.Serial)
+
+	// Check battery level before starting tests — skip if below 30%.
+	batt := -1
+	if level, err := adb.BatteryLevel(dev.Serial); err != nil {
+		log.Printf("[battery] %s: %v", dev.Serial, err)
+	} else {
+		batt = level
+		log.Printf("[battery] %s: %d%%", dev.Serial, batt)
+		if batt < 30 {
+			log.Printf("[skip] %s battery too low (%d%% < 30%%), not starting tests", dev.Serial, batt)
+			return fmt.Errorf("battery too low: %d%% (minimum 30%%)", batt)
+		}
+	}
+
 	env := []string{
 		"ANDROID_SERIAL=" + dev.Serial,
 		// Appium runs on host network → reach it via host.docker.internal.
@@ -397,6 +423,7 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 			labelRole:      roleTests,
 			labelModel:     dev.Model,
 			labelStartedAt: now.Format(time.RFC3339),
+			labelBattery:   strconv.Itoa(batt),
 		},
 	}
 
@@ -438,6 +465,7 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 		Model:      dc.DeviceModel,
 		StartedAt:  dc.TestStartedAt,
 		FinishedAt: time.Now(),
+		BatteryPct: dc.BatteryPct,
 	}
 
 	rc, err := m.cli.ContainerLogs(ctx, dc.TestID, container.LogsOptions{
@@ -557,6 +585,9 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 	}
 
 	log.Printf("[reboot] %s ready after %s", summary.deviceLabel(), bootDuration.Round(time.Second))
+	// Grant Appium overlay permission so the next test run is not blocked
+	// by the "display over other apps" system dialog.
+	adb.GrantAppiumPermissions(summary.Serial)
 	m.writeFileReport(summary, bootDuration, rebootAt, true)
 }
 
@@ -597,6 +628,9 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 	fmt.Fprintln(f, sep)
 	fmt.Fprintf(f, "Time:    %s\n", summary.FinishedAt.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(f, "Device:  %s\n", summary.deviceLabel())
+	if summary.BatteryPct >= 0 {
+		fmt.Fprintf(f, "Battery: %d%%\n", summary.BatteryPct)
+	}
 
 	if !summary.Found {
 		fmt.Fprintln(f, "Tests:   no results (container crashed before tests ran)")
@@ -645,6 +679,7 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 			BootSeconds:  bootDuration.Seconds(),
 			TotalSeconds: summary.totalDuration().Seconds(),
 			TestSeconds:  summary.TestSecs,
+			BatteryPct:   summary.BatteryPct,
 		}
 		id, err := m.store.Insert(run)
 		if err != nil {

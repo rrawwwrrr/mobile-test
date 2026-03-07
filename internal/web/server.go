@@ -306,7 +306,7 @@ tr:hover td{background:#1a1d27}
 .log-btn.sc:hover{background:#92400e}
 /* Modal */
 #modal{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
-#mbox{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;width:100%;max-width:1100px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+#mbox{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;width:100%;max-width:min(95vw,1600px);max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
 #mhdr{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid #2d3148;flex-shrink:0;gap:12px}
 #mtitle{font-size:.95rem;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mtabs{display:flex;gap:6px;flex-shrink:0}
@@ -316,7 +316,7 @@ tr:hover td{background:#1a1d27}
 .mclose:hover{background:#450a0a;border-color:#ef4444;color:#fca5a5}
 #mbody{flex:1;overflow:auto;padding:20px}
 #mscr{max-width:100%;border-radius:8px;margin-bottom:16px;display:block;border:1px solid #2d3148}
-#mpre{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:.78rem;line-height:1.6;color:#94a3b8;white-space:pre;word-break:keep-all;margin:0}
+#mpre{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:.78rem;line-height:1.6;color:#94a3b8;white-space:pre-wrap;word-break:break-all;margin:0}
 </style>
 </head>
 <body>
@@ -422,7 +422,7 @@ tr:hover td{background:#1a1d27}
 <thead><tr>
   <th>Время</th><th>Устройство</th><th>Итог</th>
   <th>Прошло</th><th>Упало</th><th>Ожидает</th>
-  <th>Подготовка</th><th>Тесты</th><th>Перезагрузка</th><th>Логи</th>
+  <th>Подготовка</th><th>Тесты</th><th>Перезагрузка</th><th>Батарея</th><th>Логи</th>
 </tr></thead>
 <tbody id="tbody">
 {{range .Runs}}
@@ -444,6 +444,12 @@ tr:hover td{background:#1a1d27}
   <td style="color:#94a3b8" title="Выполнение тестов">{{fmtSecs .TestSeconds}}</td>
   <td class="{{if .BootOK}}boot-ok{{else}}boot-fail{{end}}">{{bootTime .}}</td>
   <td>
+    {{if lt .BatteryPct 0}}—
+    {{else if lt .BatteryPct 30}}<span style="color:#f87171">{{.BatteryPct}}%</span>
+    {{else if lt .BatteryPct 50}}<span style="color:#fbbf24">{{.BatteryPct}}%</span>
+    {{else}}<span style="color:#86efac">{{.BatteryPct}}%</span>{{end}}
+  </td>
+  <td>
     {{if .HasLogs}}
     <button class="log-btn"    onclick="openLog({{.ID}},'test')">тест</button>
     <button class="log-btn ab" onclick="openLog({{.ID}},'appium')">appium</button>
@@ -460,6 +466,7 @@ tr:hover td{background:#1a1d27}
 var _mid=null,_mtype=null;
 
 function p2(n){return String(n).padStart(2,'0')}
+function battFmt(p){if(p===undefined||p<0)return '—';var c=p<30?'#f87171':p<50?'#fbbf24':'#86efac';return '<span style="color:'+c+'">'+p+'%</span>'}
 function fmtD(iso){var d=new Date(iso);return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+' '+p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds())}
 function fmtS(s){if(!s||s<=0)return '—';s=Math.floor(s);return s<60?s+'с':Math.floor(s/60)+'м '+(s%60)+'с'}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
@@ -492,6 +499,7 @@ function renderTable(runs){
       '<td style="color:#94a3b8">'+fmtS(setup)+'</td>'+
       '<td style="color:#94a3b8">'+fmtS(r.test_seconds)+'</td>'+
       '<td class="'+bc+'">'+boot+'</td>'+
+      '<td>'+battFmt(r.battery_pct)+'</td>'+
       '<td>'+logs+'</td>'+
     '</tr>';
   }).join('');
