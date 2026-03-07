@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -101,7 +102,7 @@ func defaultTestImage() string {
 	if version == "dev" {
 		return ""
 	}
-	return "rrawwwrrr/adbtest-tests:" + version
+	return "rrawwwrrr/adbtest-tests:" + strings.TrimPrefix(version, "v")
 }
 
 func main() {

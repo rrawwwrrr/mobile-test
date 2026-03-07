@@ -132,6 +132,9 @@ jobs:
       contents: write # needed to create a release
 
     steps:
+      - name: Compute semver without v prefix
+        run: echo "SEMVER=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
       - name: Download dist artifacts
         uses: actions/download-artifact@v4
         with:
@@ -153,8 +156,8 @@ jobs:
             BASE="https://github.com/rrawwwrrr/mobile-test/releases/download/${{ github.ref_name }}"
 
             # 1. Скачать и установить пакет (APK внутри)
-            wget "$BASE/adbtest_${{ github.ref_name }}_amd64.deb"
-            sudo dpkg -i adbtest_${{ github.ref_name }}_amd64.deb
+            wget "$BASE/adbtest_${{ env.SEMVER }}_amd64.deb"
+            sudo dpkg -i adbtest_${{ env.SEMVER }}_amd64.deb
 
             # 2. Отредактировать конфиг (образы Docker и т.д.)
             sudo nano /etc/default/adbtest
@@ -169,7 +172,7 @@ jobs:
             ## Docker test image
 
             ```
-            docker pull rrawwwrrr/adbtest-tests:${{ github.ref_name }}
+            docker pull rrawwwrrr/adbtest-tests:${{ env.SEMVER }}
             ```
 
             ## Запуск бинарника напрямую
@@ -181,6 +184,6 @@ jobs:
 
             ./adbtest-linux-amd64 \
               --watch \
-              --test-image rrawwwrrr/adbtest-tests:${{ github.ref_name }} \
+              --test-image rrawwwrrr/adbtest-tests:${{ env.SEMVER }} \
               --http-addr :9080
             ```
