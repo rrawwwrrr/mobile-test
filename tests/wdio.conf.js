@@ -73,6 +73,7 @@ exports.config = {
       'io.appium.settings',
       'io.appium.uiautomator2.server',
       'io.appium.uiautomator2.server.test',
+      'io.appium.android.apis',
     ];
     for (const pkg of appiumPkgs) {
       try {

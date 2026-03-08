@@ -129,6 +129,7 @@ func GrantAppiumPermissions(serial string) {
 		"io.appium.settings",
 		"io.appium.uiautomator2.server",
 		"io.appium.uiautomator2.server.test",
+		"io.appium.android.apis",
 	}
 	granted := 0
 	for _, pkg := range pkgs {
