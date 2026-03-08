@@ -687,7 +687,7 @@ async function refresh(){
 // runs must be sorted oldest→newest.
 function buildChart(runs) {
   if (!runs || !runs.length) return '';
-  var W=700, H=110, PL=30, PR=8, PT=10, PB=22;
+  var W=700, H=130, PL=30, PR=8, PT=10, PB=42;
   var plotW=W-PL-PR, plotH=H-PT-PB;
   var maxT=1;
   runs.forEach(function(r){ if(r.found){ var t=(r.passing||0)+(r.failing||0); if(t>maxT)maxT=t; } });
@@ -709,6 +709,23 @@ function buildChart(runs) {
     linePts.push([cx.toFixed(1),(PT+plotH-rate*plotH).toFixed(1)]);
   });
   var lp=linePts.map(function(p,i){return (i?'L':'M')+p[0]+','+p[1]}).join(' ');
+  // Time labels: up to 6 evenly distributed, rotated -35°
+  var firstTs=new Date(runs[0].finished_at), lastTs=new Date(runs[n-1].finished_at);
+  var spanMs=lastTs-firstTs;
+  var fmtLabel=function(iso){
+    var d=new Date(iso);
+    if(spanMs<86400000) return p2(d.getHours())+':'+p2(d.getMinutes());
+    return p2(d.getDate())+'.'+p2(d.getMonth()+1)+' '+p2(d.getHours())+':'+p2(d.getMinutes());
+  };
+  var labelCount=n===1?1:Math.min(n,6);
+  var timeLabels='';
+  for(var li=0;li<labelCount;li++){
+    var idx=n===1?0:Math.round(li*(n-1)/(labelCount-1));
+    var lx=(PL+idx*step+step/2).toFixed(1);
+    var ly=PT+plotH;
+    timeLabels+='<line x1="'+lx+'" y1="'+ly+'" x2="'+lx+'" y2="'+(ly+4)+'" stroke="#2d3148" stroke-width="1"/>'+
+      '<text x="'+lx+'" y="'+(ly+14)+'" fill="#475569" font-size="8" text-anchor="end" transform="rotate(-40,'+lx+','+(ly+14)+')">'+fmtLabel(runs[idx].finished_at)+'</text>';
+  }
   var svg='<svg width="100%" viewBox="0 0 '+W+' '+H+'" style="display:block;overflow:visible">'+
     '<line x1="'+PL+'" y1="'+PT+'" x2="'+PL+'" y2="'+(PT+plotH)+'" stroke="#2d3148" stroke-width="1"/>'+
     '<line x1="'+PL+'" y1="'+(PT+plotH)+'" x2="'+(W-PR)+'" y2="'+(PT+plotH)+'" stroke="#2d3148" stroke-width="1"/>'+
@@ -716,10 +733,9 @@ function buildChart(runs) {
     '<text x="'+(PL-4)+'" y="'+(PT+4)+'" fill="#475569" font-size="8" text-anchor="end">100%</text>'+
     '<text x="'+(PL-4)+'" y="'+(PT+plotH/2+4)+'" fill="#475569" font-size="8" text-anchor="end">50%</text>'+
     '<text x="'+(PL-4)+'" y="'+(PT+plotH+4)+'" fill="#475569" font-size="8" text-anchor="end">0%</text>'+
-    '<text x="'+PL+'" y="'+(H-2)+'" fill="#334155" font-size="8">←старые</text>'+
-    '<text x="'+(W-PR)+'" y="'+(H-2)+'" fill="#334155" font-size="8" text-anchor="end">новые→</text>'+
     bars+
     (lp?'<path d="'+lp+'" fill="none" stroke="#a5b4fc" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' : '')+
+    timeLabels+
   '</svg>';
   return '<div style="background:#0f1117;border-radius:8px;padding:12px;margin-bottom:12px">'+
     '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">'+
