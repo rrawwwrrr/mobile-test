@@ -129,6 +129,7 @@ type Manager struct {
 	NotifyFn  func()     // called after each run is saved; used for SSE push
 	rebooting sync.Map   // serial → struct{}: device is mid-reboot, skip test creation
 	reportMu  sync.Mutex // serialises writes to the daily report file
+	usbCache  sync.Map   // serial → [3]string{path, vid, pid}: last known USB info
 }
 
 // NewManager creates a new Manager. st may be nil (SQLite disabled).
@@ -158,6 +159,7 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 	for serial, dc := range existing {
 		if _, connected := readyDevices[serial]; !connected {
 			log.Printf("[remove] device %s disconnected", serial)
+			m.logEvent(serial, dc.DeviceModel, "disconnected")
 			m.removeDevice(ctx, dc)
 		}
 	}
@@ -168,6 +170,7 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 
 		// --- Appium container ---
 		appiumExited := dc.AppiumID != "" && dc.AppiumStatus != "running"
+		isNewDevice := !running // device has no managed containers at all
 		if !running || dc.AppiumID == "" || appiumExited {
 			if appiumExited {
 				log.Printf("[restart] appium exited for %s, removing and restarting", serial)
@@ -195,6 +198,11 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 			dc.AppiumStatus = newDC.AppiumStatus
 			dc.DeviceModel = newDC.DeviceModel
 			existing[serial] = dc
+
+			// Log connect event only for newly appearing devices, not Appium restarts.
+			if isNewDevice {
+				m.logEvent(serial, dev.Model, "connected")
+			}
 		} else {
 			log.Printf("[skip] appium already running for %s (port %d)", serial, dc.AppiumPort)
 		}
@@ -761,6 +769,36 @@ func (m *Manager) saveLogs(runID int64, summary testRunSummary) {
 		}
 		log.Printf("[logs] saved to %s/", dir)
 	}
+}
+
+// logEvent records a device connect/disconnect event with USB metadata.
+// For "connected" events the USB info is read live and cached.
+// For "disconnected" events the last cached info is used (device may be gone).
+func (m *Manager) logEvent(serial, model, event string) {
+	var path, vid, pid string
+	if event == "connected" {
+		path, vid, pid = adb.USBInfo(serial)
+		m.usbCache.Store(serial, [3]string{path, vid, pid})
+		log.Printf("[event] %s %s (usb=%s vid=%s pid=%s)", serial, event, path, vid, pid)
+	} else {
+		if cached, ok := m.usbCache.Load(serial); ok {
+			info := cached.([3]string)
+			path, vid, pid = info[0], info[1], info[2]
+		}
+		log.Printf("[event] %s %s", serial, event)
+	}
+	if m.store == nil {
+		return
+	}
+	_ = m.store.InsertEvent(store.DeviceEvent{
+		Serial:  serial,
+		Model:   model,
+		Event:   event,
+		TS:      time.Now().UTC(),
+		USBPath: path,
+		VID:     vid,
+		PID:     pid,
+	})
 }
 
 // sanitize replaces characters not safe for Docker container names with '-'.

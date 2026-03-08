@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -144,6 +145,32 @@ func GrantAppiumPermissions(serial string) {
 	if granted > 0 {
 		log.Printf("[appium] granted SYSTEM_ALERT_WINDOW to %d package(s) on %s", granted, serial)
 	}
+}
+
+// USBInfo returns the sysfs USB path, vendor ID and product ID for the device
+// with the given ADB serial by scanning /sys/bus/usb/devices/. Returns empty
+// strings if the device is not found (e.g. already disconnected).
+func USBInfo(serial string) (path, vid, pid string) {
+	entries, err := os.ReadDir("/sys/bus/usb/devices")
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		dir := "/sys/bus/usb/devices/" + entry.Name()
+		b, err := os.ReadFile(dir + "/serial")
+		if err != nil || strings.TrimSpace(string(b)) != serial {
+			continue
+		}
+		path = entry.Name()
+		if b, err := os.ReadFile(dir + "/idVendor"); err == nil {
+			vid = strings.TrimSpace(string(b))
+		}
+		if b, err := os.ReadFile(dir + "/idProduct"); err == nil {
+			pid = strings.TrimSpace(string(b))
+		}
+		return
+	}
+	return
 }
 
 // BatteryLevel returns the current battery charge level (0–100) for the device.

@@ -30,15 +30,40 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_serial   ON runs(serial);
 CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
+CREATE TABLE IF NOT EXISTS device_events (
+	id       INTEGER PRIMARY KEY AUTOINCREMENT,
+	serial   TEXT NOT NULL,
+	model    TEXT NOT NULL DEFAULT '',
+	event    TEXT NOT NULL,           -- 'connected' | 'disconnected'
+	ts       TEXT NOT NULL,           -- RFC3339 UTC
+	usb_path TEXT NOT NULL DEFAULT '', -- sysfs path, e.g. "1-3.2"
+	vid      TEXT NOT NULL DEFAULT '', -- USB vendor ID hex, e.g. "04e8"
+	pid      TEXT NOT NULL DEFAULT ''  -- USB product ID hex, e.g. "6860"
+);
+CREATE INDEX IF NOT EXISTS idx_events_serial ON device_events(serial);
+CREATE INDEX IF NOT EXISTS idx_events_ts     ON device_events(ts);
 `
 
-// migrations adds columns to existing databases that predate the current schema.
+// migrations adds columns/tables to existing databases that predate the current schema.
 var migrations = []string{
 	`ALTER TABLE runs ADD COLUMN total_seconds   REAL    NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN test_seconds    REAL    NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN has_logs        INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN has_screenshot  INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN battery_pct     INTEGER NOT NULL DEFAULT -1`,
+	// device_events table (new in v1.8.8)
+	`CREATE TABLE IF NOT EXISTS device_events (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		serial   TEXT NOT NULL,
+		model    TEXT NOT NULL DEFAULT '',
+		event    TEXT NOT NULL,
+		ts       TEXT NOT NULL,
+		usb_path TEXT NOT NULL DEFAULT '',
+		vid      TEXT NOT NULL DEFAULT '',
+		pid      TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_events_serial ON device_events(serial)`,
+	`CREATE INDEX IF NOT EXISTS idx_events_ts     ON device_events(ts)`,
 }
 
 // Run holds the result of one test cycle for one device.
@@ -324,6 +349,63 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+// DeviceEvent records a single connect or disconnect event for a device.
+type DeviceEvent struct {
+	ID      int64     `json:"id"`
+	Serial  string    `json:"serial"`
+	Model   string    `json:"model"`
+	Event   string    `json:"event"`    // "connected" | "disconnected"
+	TS      time.Time `json:"ts"`
+	USBPath string    `json:"usb_path"` // sysfs device path, e.g. "1-3.2"
+	VID     string    `json:"vid"`      // USB vendor ID hex, e.g. "04e8"
+	PID     string    `json:"pid"`      // USB product ID hex, e.g. "6860"
+}
+
+// InsertEvent saves a device connection event to the database.
+func (s *Store) InsertEvent(e DeviceEvent) error {
+	_, err := s.db.Exec(`
+		INSERT INTO device_events (serial, model, event, ts, usb_path, vid, pid)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		e.Serial, e.Model, e.Event,
+		e.TS.UTC().Format(time.RFC3339),
+		e.USBPath, e.VID, e.PID,
+	)
+	return err
+}
+
+// ListEvents returns the most recent `limit` device events (newest first).
+// If serial is non-empty, only events for that device are returned.
+func (s *Store) ListEvents(serial string, limit int) ([]DeviceEvent, error) {
+	query := `SELECT id, serial, model, event, ts, usb_path, vid, pid
+	          FROM device_events WHERE 1=1`
+	var args []any
+	if serial != "" {
+		query += ` AND serial = ?`
+		args = append(args, serial)
+	}
+	query += ` ORDER BY ts DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []DeviceEvent
+	for rows.Next() {
+		var e DeviceEvent
+		var ts string
+		if err := rows.Scan(&e.ID, &e.Serial, &e.Model, &e.Event, &ts, &e.USBPath, &e.VID, &e.PID); err != nil {
+			return nil, err
+		}
+		t, _ := time.Parse(time.RFC3339, ts)
+		e.TS = t.Local()
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 func boolToInt(b bool) int {

@@ -97,6 +97,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleDashboard)
 	mux.HandleFunc("/api/runs", s.handleAPIRuns)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
+	mux.HandleFunc("/api/device-events", s.handleAPIDeviceEvents)
 	mux.HandleFunc("/api/log", s.handleAPILog)
 	mux.HandleFunc("/events", s.handleEvents)
 }
@@ -166,12 +167,13 @@ func (s *Server) handleAPILog(w http.ResponseWriter, r *http.Request) {
 }
 
 type dashboardData struct {
-	Runs    []store.Run
-	Stats   []store.DeviceStats
-	Devices []string
-	Serial  string
-	Limit   int
-	Period  string
+	Runs         []store.Run
+	Stats        []store.DeviceStats
+	DeviceEvents []store.DeviceEvent
+	Devices      []string
+	Serial       string
+	Limit        int
+	Period       string
 }
 
 // periodBounds converts a period string to from/to time bounds.
@@ -224,15 +226,21 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	deviceEvents, err := s.store.ListEvents(serial, 100)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, dashboardData{
-		Runs:    runs,
-		Stats:   stats,
-		Devices: devices,
-		Serial:  serial,
-		Limit:   limit,
-		Period:  period,
+		Runs:         runs,
+		Stats:        stats,
+		DeviceEvents: deviceEvents,
+		Devices:      devices,
+		Serial:       serial,
+		Limit:        limit,
+		Period:       period,
 	}); err != nil {
 		log.Printf("[web] template error: %v", err)
 	}
@@ -268,6 +276,23 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleAPIDeviceEvents(w http.ResponseWriter, r *http.Request) {
+	serial := r.URL.Query().Get("serial")
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	events, err := s.store.ListEvents(serial, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(events)
 }
 
 const dashboardHTML = `<!DOCTYPE html>
@@ -432,6 +457,40 @@ tr:hover td{background:#1a1d27}
 </div>
 </div>
 
+<div id="epanel"{{if not .DeviceEvents}} style="display:none"{{end}}>
+<div style="padding:0 24px 24px">
+<h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Подключения устройств</h2>
+<div style="overflow-x:auto">
+<table>
+<thead><tr>
+  <th>Время</th><th>Устройство</th><th>Событие</th><th>USB путь</th><th>VID:PID</th><th>Длительность</th>
+</tr></thead>
+<tbody id="etbody">
+{{range .DeviceEvents}}
+<tr>
+  <td class="mono">{{.TS.Format "2006-01-02 15:04:05"}}</td>
+  <td>
+    <div class="mono">{{.Serial}}</div>
+    {{if .Model}}<div class="device">{{.Model}}</div>{{end}}
+  </td>
+  <td>
+    {{if eq .Event "connected"}}
+      <span class="badge pass">подключился</span>
+    {{else}}
+      <span class="badge fail">отключился</span>
+    {{end}}
+  </td>
+  <td class="mono" style="color:#94a3b8">{{if .USBPath}}{{.USBPath}}{{else}}—{{end}}</td>
+  <td class="mono" style="color:#64748b">{{if .VID}}{{.VID}}:{{.PID}}{{else}}—{{end}}</td>
+  <td style="color:#64748b" id="edur-{{.ID}}">—</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+</div>
+</div>
+
 <p class="empty" id="emsg"{{if .Runs}} style="display:none"{{end}}>Результатов пока нет.</p>
 <div id="twrap" style="overflow-x:auto{{if not .Runs}};display:none{{end}}">
 <table>
@@ -568,11 +627,54 @@ function renderStats(stats){
   }).join('');
 }
 
+function renderEvents(events){
+  var ep=document.getElementById('epanel'),
+      tb=document.getElementById('etbody');
+  if(!events||!events.length){ep.style.display='none';return}
+  ep.style.display='';
+
+  // Compute duration = time since previous event for the same serial (ascending order)
+  var bySerial={};
+  events.forEach(function(e){
+    if(!bySerial[e.serial])bySerial[e.serial]=[];
+    bySerial[e.serial].push(e);
+  });
+  // events are DESC, reverse per-device to get ascending for diff
+  Object.values(bySerial).forEach(function(arr){arr.reverse()});
+  var durMap={};
+  Object.values(bySerial).forEach(function(arr){
+    for(var i=1;i<arr.length;i++){
+      durMap[arr[i].id]=Math.round((new Date(arr[i].ts)-new Date(arr[i-1].ts))/1000);
+    }
+  });
+
+  tb.innerHTML=events.map(function(e){
+    var evtBadge=e.event==='connected'?'<span class="badge pass">подключился</span>':'<span class="badge fail">отключился</span>';
+    var usb=e.usb_path||'—';
+    var vidpid=(e.vid&&e.pid)?e.vid+':'+e.pid:'—';
+    var dur=durMap[e.id]!==undefined?fmtS(durMap[e.id]):'—';
+    return '<tr>'+
+      '<td class="mono">'+fmtD(e.ts)+'</td>'+
+      '<td><div class="mono">'+esc(e.serial)+'</div>'+(e.model?'<div class="device">'+esc(e.model)+'</div>':'')+'</td>'+
+      '<td>'+evtBadge+'</td>'+
+      '<td class="mono" style="color:#94a3b8">'+esc(usb)+'</td>'+
+      '<td class="mono" style="color:#64748b">'+esc(vidpid)+'</td>'+
+      '<td style="color:#64748b">'+dur+'</td>'+
+    '</tr>';
+  }).join('');
+}
+
 async function refresh(){
   var p=new URLSearchParams(window.location.search);
   try{
-    var rs=await fetch('/api/runs?'+p), ss=await fetch('/api/stats?'+p);
-    if(rs.ok&&ss.ok){renderTable(await rs.json());renderStats(await ss.json())}
+    var rs=await fetch('/api/runs?'+p),
+        ss=await fetch('/api/stats?'+p),
+        es=await fetch('/api/device-events?'+p);
+    if(rs.ok&&ss.ok&&es.ok){
+      renderTable(await rs.json());
+      renderStats(await ss.json());
+      renderEvents(await es.json());
+    }
   }catch(e){console.error('refresh:',e)}
 }
 
