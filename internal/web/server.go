@@ -724,6 +724,7 @@ async function openHistory(serial, model){
           '<td>'+badge+'</td>'+
           '<td style="color:#64748b">—</td>'+
           '<td style="color:#64748b">—</td>'+
+          '<td style="color:#64748b">—</td>'+
           '<td>'+usb+vp+'</td>'+
           '<td style="color:#64748b">—</td>'+
         '</tr>';
@@ -741,13 +742,14 @@ async function openHistory(serial, model){
           '<td>'+badge+'</td>'+
           '<td><span style="color:#86efac">'+(r.found?r.passing:'—')+'</span> / <span style="color:'+fc+'">'+(r.found?r.failing:'—')+'</span></td>'+
           '<td style="color:#94a3b8">'+fmtS(setup)+' / '+fmtS(r.test_seconds)+'</td>'+
+          '<td>'+battFmt(r.battery_pct)+'</td>'+
           '<td style="color:#64748b">—</td>'+
           '<td>'+logs+'</td>'+
         '</tr>';
       }
     }).join('');
     hist.innerHTML='<table style="width:100%"><thead><tr>'+
-      '<th>Время</th><th>Событие</th><th>Прошло / Упало</th><th>Подготовка / Тесты</th><th>USB / VID:PID</th><th>Логи</th>'+
+      '<th>Время</th><th>Событие</th><th>Прошло / Упало</th><th>Подготовка / Тесты</th><th>Батарея</th><th>USB / VID:PID</th><th>Логи</th>'+
       '</tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){hist.innerHTML='<p style="color:#f87171;padding:16px">Ошибка: '+e+'</p>'}
 }
