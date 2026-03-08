@@ -329,6 +329,8 @@ tr:hover td{background:#1a1d27}
 .log-btn.ab:hover{background:#2d3148}
 .log-btn.sc{color:#fbbf24;border-color:#92400e}
 .log-btn.sc:hover{background:#92400e}
+.hist-btn{background:#1e2235;color:#c4b5fd;border:1px solid #4c1d95;border-radius:4px;padding:5px 10px;font-size:.75rem;cursor:pointer;font-family:inherit;margin-top:8px;width:100%;text-align:center}
+.hist-btn:hover{background:#4c1d95}
 /* Modal */
 #modal{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
 #mbox{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;width:100%;max-width:min(95vw,1600px);max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
@@ -365,6 +367,7 @@ tr:hover td{background:#1a1d27}
   <div id="mbody">
     <img id="mscr" src="" alt="" onerror="this.style.display='none'">
     <pre id="mpre">Загрузка...</pre>
+    <div id="mhist" style="display:none"></div>
   </div>
 </div>
 </div>
@@ -451,6 +454,7 @@ tr:hover td{background:#1a1d27}
       <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxBoot}}</span></span>
     </div>
   </div>
+  <button class="hist-btn" onclick="openHistory('{{.Serial}}','{{.Model}}')">📋 история</button>
 </div>
 {{end}}
 </div>
@@ -623,6 +627,7 @@ function renderStats(stats){
           '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_boot)+'</span></span>'+
         '</div>'+
       '</div>'+
+      '<button class="hist-btn" onclick="openHistory(\''+esc(st.serial)+'\',\''+esc(st.model||'')+'\')">📋 история</button>'+
     '</div>';
   }).join('');
 }
@@ -678,6 +683,75 @@ async function refresh(){
   }catch(e){console.error('refresh:',e)}
 }
 
+// History modal
+async function openHistory(serial, model){
+  var modal=document.getElementById('modal'),
+      title=document.getElementById('mtitle'),
+      btnT=document.getElementById('btn-t'),
+      btnA=document.getElementById('btn-a'),
+      btnS=document.getElementById('btn-s'),
+      pre=document.getElementById('mpre'),
+      scr=document.getElementById('mscr'),
+      hist=document.getElementById('mhist');
+  title.textContent='История: '+serial+(model?' ('+model+')':'');
+  btnT.style.display='none';btnA.style.display='none';btnS.style.display='none';
+  pre.style.display='none';pre.textContent='';
+  scr.style.display='none';scr.src='';
+  hist.style.display='';
+  hist.innerHTML='<p style="color:#64748b;padding:16px">Загрузка...</p>';
+  modal.style.display='flex';
+  try{
+    var s=encodeURIComponent(serial);
+    var[re,ee]=await Promise.all([
+      fetch('/api/runs?serial='+s+'&limit=500'),
+      fetch('/api/device-events?serial='+s+'&limit=500')
+    ]);
+    var runs=re.ok?await re.json():[];
+    var evts=ee.ok?await ee.json():[];
+    var items=[];
+    (runs||[]).forEach(function(r){items.push({ts:r.finished_at,type:'run',data:r})});
+    (evts||[]).forEach(function(e){items.push({ts:e.ts,type:'event',data:e})});
+    items.sort(function(a,b){return new Date(b.ts)-new Date(a.ts)});
+    if(!items.length){hist.innerHTML='<p style="color:#64748b;padding:16px">История пуста.</p>';return}
+    var rows=items.map(function(item){
+      if(item.type==='event'){
+        var e=item.data;
+        var badge=e.event==='connected'?'<span class="badge pass">подключился</span>':'<span class="badge fail">отключился</span>';
+        var usb=e.usb_path?'<span class="mono" style="color:#94a3b8">'+esc(e.usb_path)+'</span>':'—';
+        var vp=(e.vid&&e.pid)?'<span class="mono" style="color:#64748b"> '+esc(e.vid)+':'+esc(e.pid)+'</span>':'';
+        return '<tr style="opacity:.8">'+
+          '<td class="mono" style="font-size:.75rem">'+fmtD(e.ts)+'</td>'+
+          '<td>'+badge+'</td>'+
+          '<td style="color:#64748b">—</td>'+
+          '<td style="color:#64748b">—</td>'+
+          '<td>'+usb+vp+'</td>'+
+          '<td style="color:#64748b">—</td>'+
+        '</tr>';
+      }else{
+        var r=item.data;
+        var badge=!r.found?'<span class="badge na">Н/Д</span>':r.failing>0?'<span class="badge fail">УПАЛ</span>':'<span class="badge pass">ПРОШЁЛ</span>';
+        var setup=Math.max(0,(r.total_seconds||0)-(r.test_seconds||0));
+        var fc=r.failing>0?'#f87171':'#86efac';
+        var logs='';
+        if(r.has_logs)logs+='<button class="log-btn" onclick="openLog('+r.id+',\'test\')">тест</button><button class="log-btn ab" onclick="openLog('+r.id+',\'appium\')">appium</button>';
+        if(r.has_screenshot)logs+='<button class="log-btn sc" onclick="openScr('+r.id+')">📷</button>';
+        if(!logs)logs='—';
+        return '<tr>'+
+          '<td class="mono" style="font-size:.75rem">'+fmtD(r.finished_at)+'</td>'+
+          '<td>'+badge+'</td>'+
+          '<td><span style="color:#86efac">'+(r.found?r.passing:'—')+'</span> / <span style="color:'+fc+'">'+(r.found?r.failing:'—')+'</span></td>'+
+          '<td style="color:#94a3b8">'+fmtS(setup)+' / '+fmtS(r.test_seconds)+'</td>'+
+          '<td style="color:#64748b">—</td>'+
+          '<td>'+logs+'</td>'+
+        '</tr>';
+      }
+    }).join('');
+    hist.innerHTML='<table style="width:100%"><thead><tr>'+
+      '<th>Время</th><th>Событие</th><th>Прошло / Упало</th><th>Подготовка / Тесты</th><th>USB / VID:PID</th><th>Логи</th>'+
+      '</tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){hist.innerHTML='<p style="color:#f87171;padding:16px">Ошибка: '+e+'</p>'}
+}
+
 // SSE — auto-reconnects built into EventSource
 (function(){
   var st=document.getElementById('cst');
@@ -691,9 +765,10 @@ async function refresh(){
 async function openLog(id,type){
   _mid=id;_mtype=type;
   document.getElementById('mtitle').textContent=(type==='test'?'Лог теста':'Лог Appium')+' #'+id;
-  document.getElementById('btn-t').className='mtab'+(type==='test'?' on':'');
-  document.getElementById('btn-a').className='mtab'+(type==='appium'?' on':'');
+  document.getElementById('btn-t').className='mtab'+(type==='test'?' on':'');document.getElementById('btn-t').style.display='';
+  document.getElementById('btn-a').className='mtab'+(type==='appium'?' on':'');document.getElementById('btn-a').style.display='';
   document.getElementById('btn-s').style.display='none';
+  var hist=document.getElementById('mhist');hist.style.display='none';hist.innerHTML='';
   var pre=document.getElementById('mpre'),scr=document.getElementById('mscr');
   pre.style.display='';
   pre.textContent='Загрузка...';
@@ -711,10 +786,11 @@ async function openLog(id,type){
 function openScr(id){
   _mid=id;_mtype='screenshot';
   document.getElementById('mtitle').textContent='Скриншот #'+id;
-  document.getElementById('btn-t').className='mtab';
-  document.getElementById('btn-a').className='mtab';
+  document.getElementById('btn-t').className='mtab';document.getElementById('btn-t').style.display='';
+  document.getElementById('btn-a').className='mtab';document.getElementById('btn-a').style.display='';
   document.getElementById('btn-s').className='mtab on';
   document.getElementById('btn-s').style.display='';
+  var hist=document.getElementById('mhist');hist.style.display='none';hist.innerHTML='';
   var pre=document.getElementById('mpre'),scr=document.getElementById('mscr');
   pre.style.display='none';
   pre.textContent='';
@@ -728,7 +804,7 @@ function switchLog(t){
   if(t==='screenshot')openScr(_mid);
   else openLog(_mid,t);
 }
-function closeModal(){document.getElementById('modal').style.display='none';document.getElementById('mscr').src=''}
+function closeModal(){var h=document.getElementById('mhist');document.getElementById('modal').style.display='none';document.getElementById('mscr').src='';h.style.display='none';h.innerHTML='';document.getElementById('btn-t').style.display='';document.getElementById('btn-a').style.display=''}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()});
 </script>
 </body>
