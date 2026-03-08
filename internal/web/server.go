@@ -402,6 +402,22 @@ tr:hover td{background:#1a1d27}
       </div>
     </div>
   </div>
+  <div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ЗАГРУЗКИ</div>
+    <div style="display:flex;justify-content:space-between;font-size:.8rem">
+      <span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">{{fmtSecs .AvgSetup}}</span></span>
+      <span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">{{fmtSecs .MinSetup}}</span></span>
+      <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxSetup}}</span></span>
+    </div>
+  </div>
+  <div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ТЕСТОВ</div>
+    <div style="display:flex;justify-content:space-between;font-size:.8rem">
+      <span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">{{fmtSecs .AvgTest}}</span></span>
+      <span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">{{fmtSecs .MinTest}}</span></span>
+      <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxTest}}</span></span>
+    </div>
+  </div>
   <div style="background:#0f1117;border-radius:6px;padding:10px">
     <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>
     <div style="display:flex;justify-content:space-between;font-size:.8rem">
@@ -523,6 +539,22 @@ function renderStats(stats){
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'+
         '<div style="background:#0f1117;border-radius:6px;padding:10px"><div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УПАЛО ТЕСТОВ</div><div style="font-size:1.1rem;font-weight:600;color:'+fc+'">'+st.total_fail+'<span style="font-size:.75rem;font-weight:400;color:#64748b"> / '+st.total_tests+'</span></div></div>'+
         '<div style="background:#0f1117;border-radius:6px;padding:10px"><div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УСПЕШНОСТЬ</div><div style="font-size:1.1rem;font-weight:600;color:'+rc+'">'+rate.toFixed(0)+'%</div></div>'+
+      '</div>'+
+      '<div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">'+
+        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ЗАГРУЗКИ</div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
+          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_setup)+'</span></span>'+
+          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_setup)+'</span></span>'+
+          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_setup)+'</span></span>'+
+        '</div>'+
+      '</div>'+
+      '<div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">'+
+        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ТЕСТОВ</div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
+          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_test)+'</span></span>'+
+          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_test)+'</span></span>'+
+          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_test)+'</span></span>'+
+        '</div>'+
       '</div>'+
       '<div style="background:#0f1117;border-radius:6px;padding:10px">'+
         '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>'+

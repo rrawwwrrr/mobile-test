@@ -189,6 +189,12 @@ type DeviceStats struct {
 	AvgBoot    float64 `json:"avg_boot"`    // average reboot time in seconds (successful reboots only)
 	MinBoot    float64 `json:"min_boot"`
 	MaxBoot    float64 `json:"max_boot"`
+	AvgTest    float64 `json:"avg_test"`   // average wdio test execution time (found=1 only)
+	MinTest    float64 `json:"min_test"`
+	MaxTest    float64 `json:"max_test"`
+	AvgSetup   float64 `json:"avg_setup"`  // average setup/APK-install time (total - test, found=1 only)
+	MinSetup   float64 `json:"min_setup"`
+	MaxSetup   float64 `json:"max_setup"`
 }
 
 // PassRate returns the percentage of passing tests (0–100).
@@ -220,7 +226,13 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 			SUM(failing)           AS total_fail,
 			AVG(CASE WHEN boot_ok=1 THEN boot_seconds END) AS avg_boot,
 			MIN(CASE WHEN boot_ok=1 THEN boot_seconds END) AS min_boot,
-			MAX(CASE WHEN boot_ok=1 THEN boot_seconds END) AS max_boot
+			MAX(CASE WHEN boot_ok=1 THEN boot_seconds END) AS max_boot,
+			AVG(CASE WHEN found=1 AND test_seconds>0 THEN test_seconds END)                     AS avg_test,
+			MIN(CASE WHEN found=1 AND test_seconds>0 THEN test_seconds END)                     AS min_test,
+			MAX(CASE WHEN found=1 AND test_seconds>0 THEN test_seconds END)                     AS max_test,
+			AVG(CASE WHEN found=1 AND total_seconds>test_seconds THEN total_seconds-test_seconds END) AS avg_setup,
+			MIN(CASE WHEN found=1 AND total_seconds>test_seconds THEN total_seconds-test_seconds END) AS min_setup,
+			MAX(CASE WHEN found=1 AND total_seconds>test_seconds THEN total_seconds-test_seconds END) AS max_setup
 		FROM runs WHERE 1=1`
 	var args []any
 	if !from.IsZero() {
@@ -243,17 +255,27 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 	for rows.Next() {
 		var st DeviceStats
 		var avgBoot, minBoot, maxBoot sql.NullFloat64
+		var avgTest, minTest, maxTest sql.NullFloat64
+		var avgSetup, minSetup, maxSetup sql.NullFloat64
 		if err := rows.Scan(
 			&st.Serial, &st.Model,
 			&st.TotalRuns, &st.FailedRuns,
 			&st.TotalTests, &st.TotalFail,
 			&avgBoot, &minBoot, &maxBoot,
+			&avgTest, &minTest, &maxTest,
+			&avgSetup, &minSetup, &maxSetup,
 		); err != nil {
 			return nil, err
 		}
 		st.AvgBoot = avgBoot.Float64
 		st.MinBoot = minBoot.Float64
 		st.MaxBoot = maxBoot.Float64
+		st.AvgTest = avgTest.Float64
+		st.MinTest = minTest.Float64
+		st.MaxTest = maxTest.Float64
+		st.AvgSetup = avgSetup.Float64
+		st.MinSetup = minSetup.Float64
+		st.MaxSetup = maxSetup.Float64
 		stats = append(stats, st)
 	}
 	return stats, rows.Err()
