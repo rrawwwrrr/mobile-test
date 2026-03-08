@@ -683,6 +683,53 @@ async function refresh(){
   }catch(e){console.error('refresh:',e)}
 }
 
+// Build an SVG run-history chart: stacked pass/fail bars + pass-rate line.
+// runs must be sorted oldest→newest.
+function buildChart(runs) {
+  if (!runs || !runs.length) return '';
+  var W=700, H=110, PL=30, PR=8, PT=10, PB=22;
+  var plotW=W-PL-PR, plotH=H-PT-PB;
+  var maxT=1;
+  runs.forEach(function(r){ if(r.found){ var t=(r.passing||0)+(r.failing||0); if(t>maxT)maxT=t; } });
+  var n=runs.length;
+  var step=plotW/n;
+  var barW=Math.max(2, Math.min(16, Math.floor(step)-1));
+  var bars='', linePts=[];
+  runs.forEach(function(r,i){
+    var cx=PL+i*step+step/2, x=(cx-barW/2).toFixed(1);
+    if(!r.found){
+      bars+='<rect x="'+x+'" y="'+(PT+plotH-3)+'" width="'+barW+'" height="3" fill="#334155" rx="1"/>';
+      return;
+    }
+    var pass=r.passing||0, fail=r.failing||0, total=pass+fail;
+    var rate=total>0?pass/total:0;
+    var pH=(pass/maxT*plotH), fH=(fail/maxT*plotH);
+    if(fail>0) bars+='<rect x="'+x+'" y="'+(PT+plotH-pH-fH).toFixed(1)+'" width="'+barW+'" height="'+fH.toFixed(1)+'" fill="#f87171" opacity=".85" rx="1"/>';
+    if(pass>0) bars+='<rect x="'+x+'" y="'+(PT+plotH-pH).toFixed(1)+'" width="'+barW+'" height="'+pH.toFixed(1)+'" fill="#86efac" opacity=".85" rx="1"/>';
+    linePts.push([cx.toFixed(1),(PT+plotH-rate*plotH).toFixed(1)]);
+  });
+  var lp=linePts.map(function(p,i){return (i?'L':'M')+p[0]+','+p[1]}).join(' ');
+  var svg='<svg width="100%" viewBox="0 0 '+W+' '+H+'" style="display:block;overflow:visible">'+
+    '<line x1="'+PL+'" y1="'+PT+'" x2="'+PL+'" y2="'+(PT+plotH)+'" stroke="#2d3148" stroke-width="1"/>'+
+    '<line x1="'+PL+'" y1="'+(PT+plotH)+'" x2="'+(W-PR)+'" y2="'+(PT+plotH)+'" stroke="#2d3148" stroke-width="1"/>'+
+    '<line x1="'+PL+'" y1="'+(PT+plotH/2)+'" x2="'+(W-PR)+'" y2="'+(PT+plotH/2)+'" stroke="#1e2235" stroke-width="1" stroke-dasharray="3,3"/>'+
+    '<text x="'+(PL-4)+'" y="'+(PT+4)+'" fill="#475569" font-size="8" text-anchor="end">100%</text>'+
+    '<text x="'+(PL-4)+'" y="'+(PT+plotH/2+4)+'" fill="#475569" font-size="8" text-anchor="end">50%</text>'+
+    '<text x="'+(PL-4)+'" y="'+(PT+plotH+4)+'" fill="#475569" font-size="8" text-anchor="end">0%</text>'+
+    '<text x="'+PL+'" y="'+(H-2)+'" fill="#334155" font-size="8">←старые</text>'+
+    '<text x="'+(W-PR)+'" y="'+(H-2)+'" fill="#334155" font-size="8" text-anchor="end">новые→</text>'+
+    bars+
+    (lp?'<path d="'+lp+'" fill="none" stroke="#a5b4fc" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' : '')+
+  '</svg>';
+  return '<div style="background:#0f1117;border-radius:8px;padding:12px;margin-bottom:12px">'+
+    '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">'+
+      'Прогоны ('+n+') &nbsp;'+
+      '<span style="color:#86efac">▮</span> прошли &nbsp;'+
+      '<span style="color:#f87171">▮</span> упали &nbsp;'+
+      '<span style="color:#a5b4fc">—</span> % успеха'+
+    '</div>'+svg+'</div>';
+}
+
 // History modal
 async function openHistory(serial, model){
   var modal=document.getElementById('modal'),
@@ -713,6 +760,8 @@ async function openHistory(serial, model){
     (evts||[]).forEach(function(e){items.push({ts:e.ts,type:'event',data:e})});
     items.sort(function(a,b){return new Date(b.ts)-new Date(a.ts)});
     if(!items.length){hist.innerHTML='<p style="color:#64748b;padding:16px">История пуста.</p>';return}
+    // Chart: runs oldest→newest
+    var chartRuns=(runs||[]).slice().sort(function(a,b){return new Date(a.finished_at)-new Date(b.finished_at)});
     var rows=items.map(function(item){
       if(item.type==='event'){
         var e=item.data;
@@ -748,7 +797,8 @@ async function openHistory(serial, model){
         '</tr>';
       }
     }).join('');
-    hist.innerHTML='<table style="width:100%"><thead><tr>'+
+    hist.innerHTML=buildChart(chartRuns)+
+      '<table style="width:100%"><thead><tr>'+
       '<th>Время</th><th>Событие</th><th>Прошло / Упало</th><th>Подготовка / Тесты</th><th>Батарея</th><th>USB / VID:PID</th><th>Логи</th>'+
       '</tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){hist.innerHTML='<p style="color:#f87171;padding:16px">Ошибка: '+e+'</p>'}
