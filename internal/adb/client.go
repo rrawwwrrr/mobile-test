@@ -137,9 +137,11 @@ func GrantAppiumPermissions(serial string) {
 			"appops", "set", pkg, "SYSTEM_ALERT_WINDOW", "allow").Run(); err == nil {
 			granted++
 		}
-		// POST_NOTIFICATIONS (Android 13+): suppresses the lock screen
-		// notification permission dialog shown by Appium Settings.
-		// Silently ignored on older API levels where the permission doesn't exist.
+	}
+	// POST_NOTIFICATIONS (Android 13+): only for packages that declare the
+	// permission in their manifest. Appium internal packages do not declare it,
+	// so pm grant would throw SecurityException — skip them.
+	for _, pkg := range []string{"io.appium.android.apis"} {
 		_ = exec.Command("adb", "-s", serial, "shell",
 			"pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS").Run()
 	}

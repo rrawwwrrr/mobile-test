@@ -268,7 +268,7 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 		query += ` AND finished_at <= ?`
 		args = append(args, to.UTC().Format(time.RFC3339))
 	}
-	query += ` GROUP BY serial ORDER BY MAX(finished_at) DESC`
+	query += ` GROUP BY serial ORDER BY COALESCE(NULLIF(model,''), serial) ASC`
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {

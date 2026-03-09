@@ -85,14 +85,17 @@ exports.config = {
       } catch (e) {
         console.warn(`[before] appops set ${pkg}: ${e.message}`);
       }
-      // POST_NOTIFICATIONS (Android 13+): suppresses the lock screen
-      // notification permission dialog shown by Appium Settings.
+    }
+    // POST_NOTIFICATIONS (Android 13+): only for packages that declare it
+    // in their manifest. Appium internal packages do not declare it, so
+    // pm grant throws SecurityException for them — skip them here.
+    for (const pkg of ['io.appium.android.apis']) {
       try {
         await driver.execute('mobile: shell', {
           command: 'pm',
           args: ['grant', pkg, 'android.permission.POST_NOTIFICATIONS'],
         });
-      } catch (e) { /* pre-Android 13, permission doesn't exist */ }
+      } catch (e) { /* pre-Android 13 or permission not declared */ }
     }
 
     // Dismiss any "display over other apps" / permission dialog still visible.
