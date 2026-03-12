@@ -88,6 +88,12 @@ func NewServer(s *store.Store, hub *Hub) *Server {
 		},
 		"sub":          func(a, b float64) float64 { return a - b },
 		"divF":         func(a int, b int) float64 { return float64(a) / float64(b) },
+		"fmtMs":        func(ms float64) string {
+			if ms <= 0 {
+				return "—"
+			}
+			return fmt.Sprintf("%.1fs", ms/1000)
+		},
 		"printf":       fmt.Sprintf,
 		"limitOptions": func() []int { return []int{50, 100, 200, 500} },
 	}).Parse(dashboardHTML))
@@ -506,7 +512,7 @@ tr:hover td{background:#1a1d27}
       <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxTest}}</span></span>
     </div>
   </div>
-  <div style="background:#0f1117;border-radius:6px;padding:10px">
+  <div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">
     <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>
     <div style="display:flex;justify-content:space-between;font-size:.8rem">
       <span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">{{fmtSecs .AvgBoot}}</span></span>
@@ -514,6 +520,15 @@ tr:hover td{background:#1a1d27}
       <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtSecs .MaxBoot}}</span></span>
     </div>
   </div>
+  {{if gt .AvgSession 0.0}}
+  <div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">СЕССИЯ / APK (среднее)</div>
+    <div style="display:flex;gap:16px;font-size:.8rem">
+      <span style="color:#64748b">сессия <span style="color:#94a3b8;font-weight:600">{{fmtMs .AvgSession}}</span></span>
+      {{if gt .AvgApk 0.0}}<span style="color:#64748b">apk <span style="color:#94a3b8;font-weight:600">{{fmtMs .AvgApk}}</span></span>{{end}}
+    </div>
+  </div>
+  {{end}}
   <button class="hist-btn" onclick="openHistory('{{.Serial}}','{{.Model}}')">📋 история</button>
 </div>
 {{end}}
