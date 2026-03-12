@@ -592,7 +592,7 @@ tr:hover td{background:#1a1d27}
 var _mid=null,_mtype=null;
 
 function p2(n){return String(n).padStart(2,'0')}
-function battFmt(p){if(p===undefined||p<0)return '—';var c=p<30?'#f87171':p<50?'#fbbf24':'#86efac';return '<span style="color:'+c+'">'+p+'%</span>'}
+function battFmt(p){if(p===undefined||p<=0)return '—';var c=p<30?'#f87171':p<50?'#fbbf24':'#86efac';return '<span style="color:'+c+'">🔋'+p+'%</span>'}
 function fmtD(iso){var d=new Date(iso);return d.getUTCFullYear()+'-'+p2(d.getUTCMonth()+1)+'-'+p2(d.getUTCDate())+' '+p2(d.getUTCHours())+':'+p2(d.getUTCMinutes())+':'+p2(d.getUTCSeconds())}
 function fmtS(s){if(!s||s<=0)return '—';s=Math.floor(s);return s<60?s+'с':Math.floor(s/60)+'м '+(s%60)+'с'}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
