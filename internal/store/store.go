@@ -195,6 +195,15 @@ func (s *Store) Insert(r Run) (int64, error) {
 }
 
 // SetHasLogs marks a run as having saved log files.
+// UpdateBoot sets boot_ok and boot_seconds on an existing run row.
+func (s *Store) UpdateBoot(id int64, bootSeconds float64, bootOK bool) error {
+	_, err := s.db.Exec(
+		`UPDATE runs SET boot_ok=?, boot_seconds=? WHERE id=?`,
+		boolToInt(bootOK), bootSeconds, id,
+	)
+	return err
+}
+
 func (s *Store) SetHasLogs(id int64) error {
 	_, err := s.db.Exec(`UPDATE runs SET has_logs=1 WHERE id=?`, id)
 	return err

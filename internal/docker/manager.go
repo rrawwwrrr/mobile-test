@@ -94,6 +94,7 @@ type testRunSummary struct {
 	Screenshot []byte  // PNG screenshot taken before reboot on failure
 	BatteryPct int     // battery level at test start (-1 = unknown)
 	UsbPath    string  // sysfs USB path at time of run, e.g. "1-3.2"
+	RunID      int64   // DB row ID assigned immediately after test, before reboot
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -233,6 +234,8 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 			summary := m.reportTestResult(ctx, serial, dc)
 			log.Printf("[cleanup] removing stopped test container for %s", serial)
 			_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
+			// Write test results to DB and file immediately — don't wait for reboot.
+			m.saveTestResult(summary)
 			m.rebooting.Store(serial, struct{}{})
 			go m.rebootAndReport(summary)
 			continue // test container will be recreated after device comes back
@@ -613,30 +616,27 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 	return summary
 }
 
-// rebootAndReport reboots the device, waits for it to come back, then writes
-// the full report entry (test results + boot time) to the daily report file.
+// rebootAndReport reboots the device, waits for it to come back, then updates
+// the already-inserted DB row with boot timing.
 func (m *Manager) rebootAndReport(summary testRunSummary) {
 	defer m.rebooting.Delete(summary.Serial)
 
 	log.Printf("[reboot] rebooting %s...", summary.deviceLabel())
-	rebootAt := time.Now()
 
 	if err := adb.Reboot(summary.Serial); err != nil {
 		log.Printf("[reboot] %s: %v", summary.Serial, err)
-		m.writeFileReport(summary, 0, rebootAt, false)
+		m.updateBootResult(summary.RunID, 0, false)
 		return
 	}
 
 	bootDuration, err := adb.WaitForReady(summary.Serial, 5*time.Minute)
 	if err != nil {
 		log.Printf("[reboot] %s: %v", summary.Serial, err)
-		m.writeFileReport(summary, bootDuration, rebootAt, false)
+		m.updateBootResult(summary.RunID, bootDuration, false)
 		return
 	}
 
 	log.Printf("[reboot] %s ready after %s", summary.deviceLabel(), bootDuration.Round(time.Second))
-	// Grant Appium overlay permission so the next test run is not blocked
-	// by the "display over other apps" system dialog.
 	adb.GrantAppiumPermissions(summary.Serial)
 	// Wait for the device to fully stabilize: some devices switch USB VID:PID
 	// after the initial ADB ready signal (e.g. 18d1→22d9 on Realme), briefly
@@ -644,7 +644,7 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 	// "device not in the list of connected devices".
 	log.Printf("[reboot] %s stabilising (15s)...", summary.deviceLabel())
 	time.Sleep(15 * time.Second)
-	m.writeFileReport(summary, bootDuration, rebootAt, true)
+	m.updateBootResult(summary.RunID, bootDuration, true)
 }
 
 // fmtDuration formats a duration as "1m 5s" or "45s".
@@ -661,8 +661,51 @@ func fmtDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm %ds", m, s)
 }
 
+// updateBootResult updates boot_ok and boot_seconds on an existing run row.
+func (m *Manager) updateBootResult(runID int64, bootDuration time.Duration, bootOK bool) {
+	if m.store == nil || runID == 0 {
+		return
+	}
+	if err := m.store.UpdateBoot(runID, bootDuration.Seconds(), bootOK); err != nil {
+		log.Printf("[report] sqlite update boot: %v", err)
+	} else if m.NotifyFn != nil {
+		m.NotifyFn()
+	}
+}
+
+// saveTestResult writes test results to the DB and file immediately after the
+// test finishes, without waiting for the device to reboot.
+func (m *Manager) saveTestResult(summary testRunSummary) {
+	if m.store != nil {
+		run := store.Run{
+			Serial:       summary.Serial,
+			Model:        summary.Model,
+			FinishedAt:   summary.FinishedAt,
+			Passing:      summary.Passing,
+			Failing:      summary.Failing,
+			Pending:      summary.Pending,
+			Found:        summary.Found,
+			TotalSeconds: summary.totalDuration().Seconds(),
+			TestSeconds:  summary.TestSecs,
+			BatteryPct:   summary.BatteryPct,
+			UsbPath:      summary.UsbPath,
+		}
+		id, err := m.store.Insert(run)
+		if err != nil {
+			log.Printf("[report] sqlite insert: %v", err)
+		} else {
+			summary.RunID = id
+			m.saveLogs(id, summary)
+			if m.NotifyFn != nil {
+				m.NotifyFn()
+			}
+		}
+	}
+	m.writeFileReport(summary)
+}
+
 // writeFileReport appends a structured entry to reports/YYYY-MM-DD.log.
-func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Duration, rebootAt time.Time, bootOK bool) {
+func (m *Manager) writeFileReport(summary testRunSummary) {
 	if err := os.MkdirAll("reports", 0o755); err != nil {
 		log.Printf("[report] mkdir reports: %v", err)
 		return
@@ -706,49 +749,10 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 			summary.TestSecs)
 	}
 
-	if bootOK {
-		readyAt := rebootAt.Add(bootDuration)
-		fmt.Fprintf(f, "Reboot:  %s  (started: %s, ready: %s)\n",
-			bootDuration.Round(time.Second),
-			rebootAt.Format("15:04:05"),
-			readyAt.Format("15:04:05"))
-	} else {
-		fmt.Fprintf(f, "Reboot:  FAILED or timed out (elapsed: %s)\n",
-			bootDuration.Round(time.Second))
-	}
-
+	fmt.Fprintf(f, "Reboot:  pending...\n")
 	fmt.Fprintln(f, sep)
 	fmt.Fprintln(f, "")
 	log.Printf("[report] written to %s", filename)
-
-	// Also persist to SQLite if a store is configured.
-	if m.store != nil {
-		run := store.Run{
-			Serial:       summary.Serial,
-			Model:        summary.Model,
-			FinishedAt:   summary.FinishedAt,
-			Passing:      summary.Passing,
-			Failing:      summary.Failing,
-			Pending:      summary.Pending,
-			Found:        summary.Found,
-			BootOK:       bootOK,
-			BootSeconds:  bootDuration.Seconds(),
-			TotalSeconds: summary.totalDuration().Seconds(),
-			TestSeconds:  summary.TestSecs,
-			BatteryPct:   summary.BatteryPct,
-			UsbPath:      summary.UsbPath,
-		}
-		id, err := m.store.Insert(run)
-		if err != nil {
-			log.Printf("[report] sqlite insert: %v", err)
-		} else {
-			m.saveLogs(id, summary)
-			// Notify SSE clients about the new run.
-			if m.NotifyFn != nil {
-				m.NotifyFn()
-			}
-		}
-	}
 }
 
 // saveLogs writes test and appium logs to reports/logs/<id>/ and marks the
