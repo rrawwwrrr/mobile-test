@@ -32,10 +32,10 @@ exports.config = {
       'appium:deviceName': deviceSerial,
       'appium:udid': deviceSerial,
       'appium:automationName': 'UiAutomator2',
-      'appium:app': apkApp,
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
-      // Always force-restart the app so each session starts on the main screen.
+      // APK is installed manually in before() so we can time it precisely.
+      'appium:noReset': true,
       'appium:forceAppLaunch': true,
       // Automatically grant all runtime permissions so no permission dialogs block tests.
       'appium:autoGrantPermissions': true,
@@ -65,6 +65,15 @@ exports.config = {
   logLevel: 'info',
 
   async before() {
+    // Install APK and log timing so adbtest can record it.
+    const apkStart = Date.now();
+    try {
+      await driver.installApp(apkApp);
+      console.log(`[setup] apk: ${((Date.now() - apkStart) / 1000).toFixed(1)}s`);
+    } catch (e) {
+      console.warn(`[setup] apk install failed: ${e.message}`);
+    }
+
     // Grant SYSTEM_ALERT_WINDOW to Appium packages from within the session.
     // This runs AFTER Appium has installed/verified its helper apps, so the
     // permission is not lost due to package reinstallation.

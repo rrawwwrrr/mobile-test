@@ -47,9 +47,11 @@ const (
 // "4 passing (13.8s)"    → group 1 = count, group 3 = seconds
 // "4 passing (1m 13.8s)" → group 1 = count, group 2 = minutes, group 3 = seconds
 var (
-	rePassing = regexp.MustCompile(`(\d+) passing(?:\s+\((?:(\d+)m\s*)?(\d+(?:\.\d+)?)s\))?`)
-	reFailing = regexp.MustCompile(`(\d+) failing`)
-	rePending = regexp.MustCompile(`(\d+) pending`)
+	rePassing    = regexp.MustCompile(`(\d+) passing(?:\s+\((?:(\d+)m\s*)?(\d+(?:\.\d+)?)s\))?`)
+	reFailing    = regexp.MustCompile(`(\d+) failing`)
+	rePending    = regexp.MustCompile(`(\d+) pending`)
+	reSessionMs  = regexp.MustCompile(`<-- POST /session \d+ (\d+) ms`)
+	reApkMs      = regexp.MustCompile(`\[setup\] apk: (\d+(?:\.\d+)?)s`)
 )
 
 // Config holds the manager configuration.
@@ -95,6 +97,8 @@ type testRunSummary struct {
 	BatteryPct int     // battery level at test start (-1 = unknown)
 	UsbPath    string  // sysfs USB path at time of run, e.g. "1-3.2"
 	RunID      int64   // DB row ID assigned immediately after test, before reboot
+	SessionMs  int     // Appium POST /session duration in ms
+	ApkMs      int     // APK install duration in ms (logged by wdio before hook)
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -578,6 +582,22 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 		if ms := rePending.FindStringSubmatch(line); ms != nil {
 			summary.Pending, _ = strconv.Atoi(ms[1])
 		}
+		// [setup] apk: 5.3s — logged by wdio before() hook
+		if ms := reApkMs.FindStringSubmatch(line); ms != nil {
+			secs, _ := strconv.ParseFloat(ms[1], 64)
+			summary.ApkMs = int(secs * 1000)
+		}
+	}
+
+	// Parse Appium session creation time from appium log.
+	// Pattern: "<-- POST /session 200 4894 ms"
+	if len(summary.AppiumLog) > 0 {
+		for _, line := range strings.Split(string(summary.AppiumLog), "\n") {
+			if ms := reSessionMs.FindStringSubmatch(line); ms != nil {
+				summary.SessionMs, _ = strconv.Atoi(ms[1])
+				break
+			}
+		}
 	}
 
 	// Take a screenshot before the device is rebooted (only on failure/crash).
@@ -690,6 +710,8 @@ func (m *Manager) saveTestResult(summary testRunSummary) testRunSummary {
 			TestSeconds:  summary.TestSecs,
 			BatteryPct:   summary.BatteryPct,
 			UsbPath:      summary.UsbPath,
+			SessionMs:    summary.SessionMs,
+			ApkMs:        summary.ApkMs,
 		}
 		id, err := m.store.Insert(run)
 		if err != nil {

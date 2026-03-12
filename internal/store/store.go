@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS runs (
 	has_logs       INTEGER NOT NULL DEFAULT 0,
 	has_screenshot INTEGER NOT NULL DEFAULT 0,
 	battery_pct    INTEGER NOT NULL DEFAULT -1,
-	usb_path        TEXT    NOT NULL DEFAULT ''
+	usb_path        TEXT    NOT NULL DEFAULT '',
+	session_ms      INTEGER NOT NULL DEFAULT 0,
+	apk_ms          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_serial   ON runs(serial);
 CREATE INDEX IF NOT EXISTS idx_runs_finished ON runs(finished_at);
@@ -68,6 +70,8 @@ var migrations = []string{
 	`ALTER TABLE runs ADD COLUMN has_screenshot  INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN battery_pct     INTEGER NOT NULL DEFAULT -1`,
 	`ALTER TABLE runs ADD COLUMN usb_path        TEXT    NOT NULL DEFAULT ''`,
+	`ALTER TABLE runs ADD COLUMN session_ms      INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN apk_ms          INTEGER NOT NULL DEFAULT 0`,
 	// device_events table (new in v1.8.8)
 	`CREATE TABLE IF NOT EXISTS device_events (
 		id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +121,8 @@ type Run struct {
 	HasScreenshot bool   `json:"has_screenshot"`
 	BatteryPct    int    `json:"battery_pct"` // battery level at test start; -1 = unknown
 	UsbPath       string `json:"usb_path"`    // sysfs USB path at time of run, e.g. "1-3.2"
+	SessionMs     int    `json:"session_ms"`  // Appium POST /session duration in ms
+	ApkMs         int    `json:"apk_ms"`      // APK installation duration in ms
 }
 
 // Verdict returns "PASS", "FAIL", or "N/A".
@@ -172,8 +178,8 @@ func (s *Store) Insert(r Run) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO runs
 		  (serial, model, finished_at, passing, failing, pending, found, boot_ok,
-		   boot_seconds, total_seconds, test_seconds, battery_pct, usb_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   boot_seconds, total_seconds, test_seconds, battery_pct, usb_path, session_ms, apk_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Serial,
 		r.Model,
 		r.FinishedAt.UTC().Format(time.RFC3339),
@@ -187,6 +193,8 @@ func (s *Store) Insert(r Run) (int64, error) {
 		r.TestSeconds,
 		r.BatteryPct,
 		r.UsbPath,
+		r.SessionMs,
+		r.ApkMs,
 	)
 	if err != nil {
 		return 0, err
@@ -221,7 +229,7 @@ func (s *Store) SetHasScreenshot(id int64) error {
 func (s *Store) List(serial string, limit int, from, to time.Time) ([]Run, error) {
 	query := `
 		SELECT id, serial, model, finished_at, passing, failing, pending, found,
-		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs, has_screenshot, battery_pct, usb_path
+		       boot_ok, boot_seconds, total_seconds, test_seconds, has_logs, has_screenshot, battery_pct, usb_path, session_ms, apk_ms
 		FROM runs WHERE 1=1`
 	var args []any
 	if serial != "" {
@@ -406,6 +414,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 			&found, &bootOK,
 			&r.BootSeconds, &r.TotalSeconds, &r.TestSeconds,
 			&hasLogs, &hasScreenshot, &r.BatteryPct, &r.UsbPath,
+			&r.SessionMs, &r.ApkMs,
 		); err != nil {
 			return nil, err
 		}

@@ -87,6 +87,7 @@ func NewServer(s *store.Store, hub *Hub) *Server {
 			return strconv.Itoa(secs/60) + "м " + strconv.Itoa(secs%60) + "с"
 		},
 		"sub":          func(a, b float64) float64 { return a - b },
+		"divF":         func(a int, b int) float64 { return float64(a) / float64(b) },
 		"printf":       fmt.Sprintf,
 		"limitOptions": func() []int { return []int{50, 100, 200, 500} },
 	}).Parse(dashboardHTML))
@@ -527,7 +528,7 @@ tr:hover td{background:#1a1d27}
 <thead><tr>
   <th>Время</th><th>Устройство</th><th>Итог</th>
   <th>Прошло</th><th>Упало</th><th>Ожидает</th>
-  <th>Подготовка</th><th>Тесты</th><th>Перезагрузка</th><th>Батарея</th><th>USB путь</th><th>Логи</th>
+  <th>Сессия</th><th>APK</th><th>Тесты</th><th>Перезагрузка</th><th>Батарея</th><th>USB путь</th><th>Логи</th>
 </tr></thead>
 <tbody id="tbody">
 {{range .Runs}}
@@ -545,7 +546,8 @@ tr:hover td{background:#1a1d27}
   <td style="color:#86efac">{{if .Found}}{{.Passing}}{{else}}—{{end}}</td>
   <td style="color:{{if gt .Failing 0}}#f87171{{else}}#64748b{{end}}">{{if .Found}}{{.Failing}}{{else}}—{{end}}</td>
   <td style="color:#64748b">{{if .Found}}{{.Pending}}{{else}}—{{end}}</td>
-  <td style="color:#94a3b8" title="Инициализация + установка APK">{{fmtSecs (sub .TotalSeconds .TestSeconds)}}</td>
+  <td style="color:#94a3b8" title="Создание Appium-сессии">{{if gt .SessionMs 0}}{{fmtSecs (divF .SessionMs 1000)}}{{else}}—{{end}}</td>
+  <td style="color:#94a3b8" title="Установка APK">{{if gt .ApkMs 0}}{{fmtSecs (divF .ApkMs 1000)}}{{else}}—{{end}}</td>
   <td style="color:#94a3b8" title="Выполнение тестов">{{fmtSecs .TestSeconds}}</td>
   <td class="{{if .BootOK}}boot-ok{{else}}boot-fail{{end}}">{{bootTime .}}</td>
   <td>
@@ -586,7 +588,6 @@ function renderTable(runs){
   if(!runs||!runs.length){tw.style.display='none';em.style.display='';return}
   em.style.display='none';tw.style.display='';
   tb.innerHTML=runs.map(function(r){
-    var setup=Math.max(0,(r.total_seconds||0)-(r.test_seconds||0));
     var badge=!r.found?'<span class="badge na">Н/Д</span>':r.failing>0?'<span class="badge fail">УПАЛ</span>':'<span class="badge pass">ПРОШЁЛ</span>';
     var fc=r.failing>0?'#f87171':'#64748b';
     var bc=r.boot_ok?'boot-ok':'boot-fail';
@@ -602,7 +603,8 @@ function renderTable(runs){
       '<td style="color:#86efac">'+(r.found?r.passing:'—')+'</td>'+
       '<td style="color:'+fc+'">'+(r.found?r.failing:'—')+'</td>'+
       '<td style="color:#64748b">'+(r.found?r.pending:'—')+'</td>'+
-      '<td style="color:#94a3b8">'+fmtS(setup)+'</td>'+
+      '<td style="color:#94a3b8">'+(r.session_ms>0?fmtS(r.session_ms/1000):'—')+'</td>'+
+      '<td style="color:#94a3b8">'+(r.apk_ms>0?fmtS(r.apk_ms/1000):'—')+'</td>'+
       '<td style="color:#94a3b8">'+fmtS(r.test_seconds)+'</td>'+
       '<td class="'+bc+'">'+boot+'</td>'+
       '<td>'+battFmt(r.battery_pct)+'</td>'+
