@@ -18,6 +18,7 @@ import (
 	"adbtest/internal/adb"
 	"adbtest/internal/docker"
 	"adbtest/internal/store"
+	"adbtest/internal/usb"
 	"adbtest/internal/web"
 
 	dockerclient "github.com/docker/docker/client"
@@ -258,12 +259,15 @@ func main() {
 	}()
 	defer httpServer.Shutdown(context.Background())
 
+	usbMon := usb.NewMonitor(st)
+
 	if *watch {
 		log.Printf("Watch mode (interval=%s, appium=%s, tests=%s, base-port=%d)",
 			*interval, *appiumImage, cfg.TestImage, *basePort)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 
+		usbMon.Poll()
 		reconcile(ctx, mgr)
 		for {
 			select {
@@ -271,10 +275,12 @@ func main() {
 				log.Println("Shutting down.")
 				return
 			case <-ticker.C:
+				usbMon.Poll()
 				reconcile(ctx, mgr)
 			}
 		}
 	} else {
+		usbMon.Poll()
 		reconcile(ctx, mgr)
 	}
 }

@@ -101,6 +101,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/device-events", s.handleAPIDeviceEvents)
 	mux.HandleFunc("/api/log", s.handleAPILog)
 	mux.HandleFunc("/api/usb-devices", s.handleAPIUSBDevices)
+	mux.HandleFunc("/api/usb-events", s.handleAPIUSBEvents)
+	mux.HandleFunc("/usb", s.handleUSBPage)
 	mux.HandleFunc("/events", s.handleEvents)
 }
 
@@ -300,6 +302,31 @@ func (s *Server) handleAPIUSBDevices(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(usbDevs)
 }
 
+func (s *Server) handleAPIUSBEvents(w http.ResponseWriter, r *http.Request) {
+	serial := r.URL.Query().Get("serial")
+	limit := 500
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	events, err := s.store.ListUSBEvents(serial, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if events == nil {
+		events = []store.USBEvent{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(events)
+}
+
+func (s *Server) handleUSBPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(usbPageHTML))
+}
+
 func (s *Server) handleAPIDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	serial := r.URL.Query().Get("serial")
 	limit := 100
@@ -372,6 +399,7 @@ tr:hover td{background:#1a1d27}
 <header>
   <h1>📱 adbtest</h1>
   <span id="cst" style="font-size:.8rem;color:#64748b">⏳ подключение...</span>
+  <a href="/usb" style="margin-left:auto;font-size:.8rem;color:#64748b;text-decoration:none" onmouseover="this.style.color='#a5b4fc'" onmouseout="this.style.color='#64748b'">USB устройства</a>
 </header>
 
 <!-- Log modal -->
@@ -710,7 +738,6 @@ function renderUSBDevices(devs){
         '<div style="margin-top:6px">'+vidpid+
           '<span style="margin-left:8px;font-size:.65rem;color:#475569">'+esc(d.path)+'</span>'+
         '</div>'+
-        '<div style="margin-top:6px;font-size:.65rem;color:#f59e0b">⚠ включите отладку USB</div>'+
       '</div>';
     }).join('');
 }
@@ -922,6 +949,119 @@ function switchLog(t){
 }
 function closeModal(){var h=document.getElementById('mhist');document.getElementById('modal').style.display='none';document.getElementById('mscr').src='';h.style.display='none';h.innerHTML='';document.getElementById('btn-t').style.display='';document.getElementById('btn-a').style.display=''}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()});
+</script>
+</body>
+</html>`
+
+const usbPageHTML = `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>USB устройства</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:#0a0c14;color:#e2e8f0;min-height:100vh}
+a{color:#a5b4fc;text-decoration:none}a:hover{text-decoration:underline}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#0f1117;border-bottom:1px solid #1e2235}
+.topbar-title{font-size:.85rem;font-weight:600;color:#e2e8f0;letter-spacing:.03em}
+.mono{font-family:'JetBrains Mono','Fira Mono',monospace}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:600;letter-spacing:.04em}
+.appeared{background:#14532d;color:#86efac}
+.disappeared{background:#450a0a;color:#f87171}
+.inadb{background:#1e3a5f;color:#93c5fd}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;padding:8px 12px;border-bottom:1px solid #1e2235;white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid #1a1d27;font-size:.8rem;vertical-align:middle}
+tr:hover td{background:#0f1117}
+.filter-bar{display:flex;align-items:center;gap:12px;padding:16px 24px}
+input[type=text],select{background:#0f1117;border:1px solid #2d3148;border-radius:6px;color:#e2e8f0;padding:6px 10px;font-size:.8rem;outline:none}
+input[type=text]:focus,select:focus{border-color:#a5b4fc}
+.count{font-size:.75rem;color:#475569;margin-left:auto}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-title">USB устройства</div>
+  <a href="/" style="font-size:.8rem;color:#64748b">← дашборд</a>
+</div>
+<div class="filter-bar">
+  <input type="text" id="filter-serial" placeholder="серийный номер…" oninput="applyFilter()">
+  <select id="filter-event" onchange="applyFilter()">
+    <option value="">все события</option>
+    <option value="appeared">появился</option>
+    <option value="disappeared">исчез</option>
+  </select>
+  <select id="filter-adb" onchange="applyFilter()">
+    <option value="">любой ADB</option>
+    <option value="1">в ADB</option>
+    <option value="0">не в ADB</option>
+  </select>
+  <span class="count" id="count">загрузка…</span>
+</div>
+<div style="padding:0 24px 24px;overflow-x:auto">
+<table>
+  <thead>
+    <tr>
+      <th>Время</th>
+      <th>Событие</th>
+      <th>Устройство</th>
+      <th>Серийный номер</th>
+      <th>VID:PID</th>
+      <th>USB путь</th>
+      <th>Вендор</th>
+      <th>ADB</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+</div>
+<script>
+var allEvents=[];
+function esc(s){if(!s)return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtD(iso){
+  var d=new Date(iso);
+  return d.toLocaleDateString('ru')+' '+d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+function applyFilter(){
+  var serial=document.getElementById('filter-serial').value.toLowerCase();
+  var evType=document.getElementById('filter-event').value;
+  var adbF=document.getElementById('filter-adb').value;
+  var rows=allEvents.filter(function(e){
+    if(serial && !e.serial.toLowerCase().includes(serial) && !e.product.toLowerCase().includes(serial)) return false;
+    if(evType && e.event!==evType) return false;
+    if(adbF==='1' && !e.in_adb) return false;
+    if(adbF==='0' && e.in_adb) return false;
+    return true;
+  });
+  document.getElementById('count').textContent=rows.length+' из '+allEvents.length;
+  document.getElementById('tbody').innerHTML=rows.map(function(e){
+    var evBadge=e.event==='appeared'
+      ?'<span class="badge appeared">появился</span>'
+      :'<span class="badge disappeared">исчез</span>';
+    var adbBadge=e.in_adb?'<span class="badge inadb">ADB</span>':'<span style="color:#334155">—</span>';
+    var prod=e.product||e.vendor||'—';
+    return '<tr>'+
+      '<td class="mono" style="color:#94a3b8;white-space:nowrap">'+fmtD(e.ts)+'</td>'+
+      '<td>'+evBadge+'</td>'+
+      '<td><div style="font-size:.8rem;color:#e2e8f0">'+esc(prod)+'</div>'+(e.vendor&&e.product?'<div style="font-size:.7rem;color:#475569">'+esc(e.vendor)+'</div>':'')+'</td>'+
+      '<td class="mono" style="color:#94a3b8">'+esc(e.serial||'—')+'</td>'+
+      '<td class="mono" style="color:#64748b">'+esc(e.vid)+':'+esc(e.pid)+'</td>'+
+      '<td class="mono" style="color:#475569">'+esc(e.path)+'</td>'+
+      '<td style="color:#64748b">'+esc(e.vendor||'—')+'</td>'+
+      '<td>'+adbBadge+'</td>'+
+    '</tr>';
+  }).join('');
+}
+async function load(){
+  try{
+    var r=await fetch('/api/usb-events?limit=1000');
+    if(!r.ok)throw new Error(r.status);
+    allEvents=await r.json();
+    applyFilter();
+  }catch(e){document.getElementById('count').textContent='Ошибка: '+e}
+}
+load();
 </script>
 </body>
 </html>`
