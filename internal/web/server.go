@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"adbtest/internal/adb"
 	"adbtest/internal/store"
 )
 
@@ -99,6 +100,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/device-events", s.handleAPIDeviceEvents)
 	mux.HandleFunc("/api/log", s.handleAPILog)
+	mux.HandleFunc("/api/usb-devices", s.handleAPIUSBDevices)
 	mux.HandleFunc("/events", s.handleEvents)
 }
 
@@ -278,6 +280,26 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func (s *Server) handleAPIUSBDevices(w http.ResponseWriter, r *http.Request) {
+	usbDevs := adb.USBAndroidDevices()
+	// Mark which ones are visible in ADB.
+	adbDevs, _ := adb.ListDevices()
+	adbSerials := make(map[string]bool, len(adbDevs))
+	for _, d := range adbDevs {
+		adbSerials[d.Serial] = true
+	}
+	for i := range usbDevs {
+		if usbDevs[i].Serial != "" {
+			usbDevs[i].InADB = adbSerials[usbDevs[i].Serial]
+		}
+	}
+	if usbDevs == nil {
+		usbDevs = []adb.USBAndroidDevice{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usbDevs)
+}
+
 func (s *Server) handleAPIDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	serial := r.URL.Query().Get("serial")
 	limit := 100
@@ -396,6 +418,8 @@ tr:hover td{background:#1a1d27}
   </form>
   <span class="count" id="rcount">{{len .Runs}} записей</span>
 </div>
+
+<div id="usb-ghost" style="padding:0 24px 4px"></div>
 
 <div id="spanel"{{if not .Stats}} style="display:none"{{end}}>
 <div style="padding:0 24px 24px">
@@ -669,16 +693,40 @@ function renderEvents(events){
   }).join('');
 }
 
+function renderUSBDevices(devs){
+  // Show devices visible in USB but not yet in ADB (e.g. USB debugging disabled).
+  var ghost=devs.filter(function(d){return !d.in_adb;});
+  var el=document.getElementById('usb-ghost');
+  if(!el)return;
+  if(!ghost.length){el.innerHTML='';return;}
+  el.innerHTML='<div style="margin-bottom:8px;font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em">USB подключено — ADB не видит</div>'+
+    ghost.map(function(d){
+      var label=d.product||d.vendor||d.vid+':'+d.pid;
+      var sub=d.serial?'<div class="mono" style="font-size:.7rem;color:#64748b">'+esc(d.serial)+'</div>':'';
+      var vidpid='<span class="mono" style="font-size:.65rem;color:#475569">'+d.vid+':'+d.pid+'</span>';
+      return '<div style="display:inline-block;vertical-align:top;background:#0f1117;border:1px dashed #334155;border-radius:10px;padding:12px 16px;margin:0 8px 8px 0;min-width:180px">'+
+        '<div style="font-size:.75rem;color:#94a3b8;margin-bottom:2px">'+esc(label)+'</div>'+
+        sub+
+        '<div style="margin-top:6px">'+vidpid+
+          '<span style="margin-left:8px;font-size:.65rem;color:#475569">'+esc(d.path)+'</span>'+
+        '</div>'+
+        '<div style="margin-top:6px;font-size:.65rem;color:#f59e0b">⚠ включите отладку USB</div>'+
+      '</div>';
+    }).join('');
+}
+
 async function refresh(){
   var p=new URLSearchParams(window.location.search);
   try{
     var rs=await fetch('/api/runs?'+p),
         ss=await fetch('/api/stats?'+p),
-        es=await fetch('/api/device-events?'+p);
-    if(rs.ok&&ss.ok&&es.ok){
+        es=await fetch('/api/device-events?'+p),
+        us=await fetch('/api/usb-devices');
+    if(rs.ok&&ss.ok&&es.ok&&us.ok){
       renderTable(await rs.json());
       renderStats(await ss.json());
       renderEvents(await es.json());
+      renderUSBDevices(await us.json());
     }
   }catch(e){console.error('refresh:',e)}
 }

@@ -150,6 +150,90 @@ func GrantAppiumPermissions(serial string) {
 	}
 }
 
+// androidVendors maps USB vendor IDs (lowercase hex) to OEM names.
+// Covers the most common Android device manufacturers.
+var androidVendors = map[string]string{
+	"0502": "Acer",
+	"0489": "Foxconn",
+	"04c5": "Fujitsu",
+	"04dd": "Sharp",
+	"04e8": "Samsung",
+	"0b05": "Asus",
+	"0bb4": "HTC",
+	"0fce": "Sony",
+	"1004": "LG",
+	"1782": "Spreadtrum",
+	"18d1": "Google",
+	"19d2": "ZTE",
+	"1bbb": "Alcatel",
+	"1d4d": "Pegatron",
+	"1ebf": "Huawei",
+	"2717": "Xiaomi",
+	"17ef": "Lenovo",
+	"12d1": "Huawei",
+	"22b8": "Motorola",
+	"22d9": "OPPO/realme",
+	"2a45": "Meizu",
+	"2a70": "OnePlus",
+	"2d95": "vivo",
+	"2e04": "Nokia",
+	"2ee5": "Fairphone",
+	"05c6": "Qualcomm",
+	"0e8d": "MediaTek",
+}
+
+// USBAndroidDevice describes an Android device detected via USB sysfs,
+// regardless of whether ADB can see it.
+type USBAndroidDevice struct {
+	Path    string `json:"path"`
+	VID     string `json:"vid"`
+	PID     string `json:"pid"`
+	Serial  string `json:"serial"`   // USB serial descriptor (may be empty)
+	Product string `json:"product"`  // USB product string
+	Vendor  string `json:"vendor"`   // human-readable OEM name
+	InADB   bool   `json:"in_adb"`  // true if visible in `adb devices`
+}
+
+// USBAndroidDevices enumerates all USB devices with known Android vendor IDs
+// by reading /sys/bus/usb/devices. Only device nodes (no interface suffixes)
+// are returned.
+func USBAndroidDevices() []USBAndroidDevice {
+	entries, err := os.ReadDir("/sys/bus/usb/devices")
+	if err != nil {
+		return nil
+	}
+	var out []USBAndroidDevice
+	for _, entry := range entries {
+		name := entry.Name()
+		// Skip interface nodes (e.g. "2-1.3:1.0") — device nodes have no colon.
+		if strings.ContainsRune(name, ':') {
+			continue
+		}
+		dir := "/sys/bus/usb/devices/" + name
+		vidB, err := os.ReadFile(dir + "/idVendor")
+		if err != nil {
+			continue
+		}
+		vid := strings.TrimSpace(string(vidB))
+		oem, ok := androidVendors[vid]
+		if !ok {
+			continue
+		}
+		dev := USBAndroidDevice{Path: name, VID: vid, Vendor: oem}
+		if b, err := os.ReadFile(dir + "/idProduct"); err == nil {
+			dev.PID = strings.TrimSpace(string(b))
+		}
+		if b, err := os.ReadFile(dir + "/serial"); err == nil {
+			dev.Serial = strings.TrimSpace(string(b))
+		}
+		if b, err := os.ReadFile(dir + "/product"); err == nil {
+			dev.Product = strings.TrimSpace(string(b))
+		}
+		out = append(out, dev)
+	}
+	return out
+}
+
 // USBInfo returns the sysfs USB path, vendor ID and product ID for the device
 // with the given ADB serial by scanning /sys/bus/usb/devices/. Returns empty
 // strings if the device is not found (e.g. already disconnected).
