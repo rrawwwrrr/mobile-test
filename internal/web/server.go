@@ -645,11 +645,27 @@ function renderStats(stats){
     return '<div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">'+
         '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+(st.usb_path?'<div class="mono" style="font-size:.7rem;color:#475569;margin-top:2px">'+esc(st.usb_path)+'</div>':'')+'</div>'+
-        '<div style="text-align:right">'+badge+'</div>'+
+        '<div style="text-align:right">'+badge+'<div style="margin-top:6px;font-size:.75rem">'+battFmt(st.last_battery)+'</div></div>'+
       '</div>'+
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'+
         '<div style="background:#0f1117;border-radius:6px;padding:10px"><div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УПАЛО ТЕСТОВ</div><div style="font-size:1.1rem;font-weight:600;color:'+fc+'">'+st.total_fail+'<span style="font-size:.75rem;font-weight:400;color:#64748b"> / '+st.total_tests+'</span></div></div>'+
         '<div style="background:#0f1117;border-radius:6px;padding:10px"><div style="font-size:.7rem;color:#64748b;margin-bottom:4px">УСПЕШНОСТЬ</div><div style="font-size:1.1rem;font-weight:600;color:'+rc+'">'+rate.toFixed(0)+'%</div></div>'+
+      '</div>'+
+      '<div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">'+
+        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ТЕСТОВ</div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
+          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_test)+'</span></span>'+
+          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_test)+'</span></span>'+
+          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_test)+'</span></span>'+
+        '</div>'+
+      '</div>'+
+      '<div style="background:#0f1117;border-radius:6px;padding:10px'+(st.avg_session>0||st.avg_apk>0?';margin-bottom:8px':'')+'">'+
+        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
+          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_boot)+'</span></span>'+
+          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_boot)+'</span></span>'+
+          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_boot)+'</span></span>'+
+        '</div>'+
       '</div>'+
       (st.avg_session>0?'<div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">'+
         '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">СЕССИЯ APPIUM</div>'+
@@ -667,22 +683,6 @@ function renderStats(stats){
           '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_apk/1000)+'</span></span>'+
         '</div>'+
       '</div>':'')+
-      '<div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">'+
-        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ТЕСТОВ</div>'+
-        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
-          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_test)+'</span></span>'+
-          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_test)+'</span></span>'+
-          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_test)+'</span></span>'+
-        '</div>'+
-      '</div>'+
-      '<div style="background:#0f1117;border-radius:6px;padding:10px">'+
-        '<div style="font-size:.7rem;color:#64748b;margin-bottom:6px">ВРЕМЯ ПЕРЕЗАГРУЗКИ</div>'+
-        '<div style="display:flex;justify-content:space-between;font-size:.8rem">'+
-          '<span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">'+fmtS(st.avg_boot)+'</span></span>'+
-          '<span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">'+fmtS(st.min_boot)+'</span></span>'+
-          '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_boot)+'</span></span>'+
-        '</div>'+
-      '</div>'+
       '<button class="hist-btn" onclick="openHistory(\''+esc(st.serial)+'\',\''+esc(st.model||'')+'\')">📋 история</button>'+
     '</div>';
   }).join('');
