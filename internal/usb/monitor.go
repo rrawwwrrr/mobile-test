@@ -1,6 +1,7 @@
 package usb
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -9,10 +10,10 @@ import (
 	"adbtest/internal/store"
 )
 
-// Monitor polls USB devices and records appear/disappear events to the store.
+// Monitor polls USB devices and records appear/disappear/mode_change events.
 type Monitor struct {
 	st   *store.Store
-	prev map[string]adb.USBAndroidDevice // keyed by serial (or path if no serial)
+	prev map[string]adb.USBAndroidDevice // keyed by USB path
 	mu   sync.Mutex
 }
 
@@ -22,16 +23,6 @@ func NewMonitor(st *store.Store) *Monitor {
 		st:   st,
 		prev: make(map[string]adb.USBAndroidDevice),
 	}
-}
-
-// devKey returns a stable identity key for a USB device.
-// Prefer serial number so that VID:PID changes during Android boot
-// (e.g. 18d1 → 22d9) are not treated as disconnect+reconnect.
-func devKey(d adb.USBAndroidDevice) string {
-	if d.Serial != "" {
-		return "serial:" + d.Serial
-	}
-	return "path:" + d.Path
 }
 
 // Poll runs one diff cycle. Call periodically (e.g. on each reconcile tick).
@@ -52,7 +43,7 @@ func (m *Monitor) Poll() {
 
 	curMap := make(map[string]adb.USBAndroidDevice, len(current))
 	for _, d := range current {
-		curMap[devKey(d)] = d
+		curMap[d.Path] = d
 	}
 
 	now := time.Now().UTC()
@@ -60,41 +51,54 @@ func (m *Monitor) Poll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Detect newly appeared devices.
-	for key, d := range curMap {
-		if _, existed := m.prev[key]; !existed {
-			ev := store.USBEvent{
+	for path, d := range curMap {
+		prev, existed := m.prev[path]
+		if !existed {
+			// New USB path — device plugged in.
+			m.record(store.USBEvent{
 				TS: now, Event: "appeared",
 				Path: d.Path, VID: d.VID, PID: d.PID,
 				Serial: d.Serial, Product: d.Product, Vendor: d.Vendor,
 				InADB: d.InADB,
-			}
-			if err := m.st.InsertUSBEvent(ev); err != nil {
-				log.Printf("[usb] insert appeared event: %v", err)
-			} else {
-				log.Printf("[usb] appeared  %s  %s:%s  %s  adb=%v",
-					d.Path, d.VID, d.PID, d.Product, d.InADB)
-			}
+			})
+		} else if prev.VID != d.VID || prev.PID != d.PID {
+			// Same port, different VID:PID — Android switched USB mode.
+			m.record(store.USBEvent{
+				TS: now, Event: "mode_change",
+				Path: d.Path, VID: d.VID, PID: d.PID,
+				Serial: d.Serial, Product: d.Product, Vendor: d.Vendor,
+				InADB:  d.InADB,
+				Detail: fmt.Sprintf("%s:%s → %s:%s", prev.VID, prev.PID, d.VID, d.PID),
+			})
 		}
 	}
 
 	// Detect disappeared devices.
-	for key, d := range m.prev {
-		if _, exists := curMap[key]; !exists {
-			ev := store.USBEvent{
+	for path, d := range m.prev {
+		if _, exists := curMap[path]; !exists {
+			m.record(store.USBEvent{
 				TS: now, Event: "disappeared",
 				Path: d.Path, VID: d.VID, PID: d.PID,
 				Serial: d.Serial, Product: d.Product, Vendor: d.Vendor,
 				InADB: false,
-			}
-			if err := m.st.InsertUSBEvent(ev); err != nil {
-				log.Printf("[usb] insert disappeared event: %v", err)
-			} else {
-				log.Printf("[usb] disappeared %s  %s:%s  %s",
-					d.Path, d.VID, d.PID, d.Product)
-			}
+			})
 		}
 	}
 
 	m.prev = curMap
+}
+
+func (m *Monitor) record(ev store.USBEvent) {
+	if err := m.st.InsertUSBEvent(ev); err != nil {
+		log.Printf("[usb] insert %s event: %v", ev.Event, err)
+		return
+	}
+	switch ev.Event {
+	case "appeared":
+		log.Printf("[usb] appeared    %s  %s:%s  %s  adb=%v", ev.Path, ev.VID, ev.PID, ev.Product, ev.InADB)
+	case "disappeared":
+		log.Printf("[usb] disappeared %s  %s:%s  %s", ev.Path, ev.VID, ev.PID, ev.Product)
+	case "mode_change":
+		log.Printf("[usb] mode_change %s  %s  %s  adb=%v", ev.Path, ev.Detail, ev.Product, ev.InADB)
+	}
 }

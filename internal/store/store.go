@@ -45,14 +45,15 @@ CREATE INDEX IF NOT EXISTS idx_events_ts     ON device_events(ts);
 CREATE TABLE IF NOT EXISTS usb_events (
 	id      INTEGER PRIMARY KEY AUTOINCREMENT,
 	ts      TEXT NOT NULL,           -- RFC3339 UTC
-	event   TEXT NOT NULL,           -- 'appeared' | 'disappeared'
+	event   TEXT NOT NULL,           -- 'appeared' | 'disappeared' | 'mode_change'
 	path    TEXT NOT NULL DEFAULT '', -- sysfs USB path, e.g. "1-2.1"
 	vid     TEXT NOT NULL DEFAULT '',
 	pid     TEXT NOT NULL DEFAULT '',
 	serial  TEXT NOT NULL DEFAULT '', -- USB serial descriptor
 	product TEXT NOT NULL DEFAULT '', -- USB product string
 	vendor  TEXT NOT NULL DEFAULT '', -- human-readable OEM name
-	in_adb  INTEGER NOT NULL DEFAULT 0
+	in_adb  INTEGER NOT NULL DEFAULT 0,
+	detail  TEXT NOT NULL DEFAULT ''  -- extra info, e.g. "22d9:2769 → 18d1:4ee8"
 );
 CREATE INDEX IF NOT EXISTS idx_usb_ts     ON usb_events(ts);
 CREATE INDEX IF NOT EXISTS idx_usb_serial ON usb_events(serial);
@@ -93,6 +94,7 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_usb_ts     ON usb_events(ts)`,
 	`CREATE INDEX IF NOT EXISTS idx_usb_serial ON usb_events(serial)`,
+	`ALTER TABLE usb_events ADD COLUMN detail TEXT NOT NULL DEFAULT ''`,
 }
 
 // Run holds the result of one test cycle for one device.
@@ -437,12 +439,12 @@ func (s *Store) ListEvents(serial string, limit int) ([]DeviceEvent, error) {
 	return events, rows.Err()
 }
 
-// USBEvent records a single USB appear/disappear event for an Android device
-// that may or may not be visible to ADB.
+// USBEvent records a single USB appear/disappear/mode_change event for an
+// Android device that may or may not be visible to ADB.
 type USBEvent struct {
 	ID      int64     `json:"id"`
 	TS      time.Time `json:"ts"`
-	Event   string    `json:"event"`   // "appeared" | "disappeared"
+	Event   string    `json:"event"`   // "appeared" | "disappeared" | "mode_change"
 	Path    string    `json:"path"`
 	VID     string    `json:"vid"`
 	PID     string    `json:"pid"`
@@ -450,16 +452,17 @@ type USBEvent struct {
 	Product string    `json:"product"`
 	Vendor  string    `json:"vendor"`
 	InADB   bool      `json:"in_adb"`
+	Detail  string    `json:"detail"`  // e.g. "22d9:2769 → 18d1:4ee8" for mode_change
 }
 
 // InsertUSBEvent saves a USB device event to the database.
 func (s *Store) InsertUSBEvent(e USBEvent) error {
 	_, err := s.db.Exec(`
-		INSERT INTO usb_events (ts, event, path, vid, pid, serial, product, vendor, in_adb)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO usb_events (ts, event, path, vid, pid, serial, product, vendor, in_adb, detail)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.TS.UTC().Format(time.RFC3339),
 		e.Event, e.Path, e.VID, e.PID, e.Serial, e.Product, e.Vendor,
-		boolToInt(e.InADB),
+		boolToInt(e.InADB), e.Detail,
 	)
 	return err
 }
@@ -467,7 +470,7 @@ func (s *Store) InsertUSBEvent(e USBEvent) error {
 // ListUSBEvents returns the most recent `limit` USB events (newest first).
 // If serial is non-empty, only events for that serial are returned.
 func (s *Store) ListUSBEvents(serial string, limit int) ([]USBEvent, error) {
-	query := `SELECT id, ts, event, path, vid, pid, serial, product, vendor, in_adb
+	query := `SELECT id, ts, event, path, vid, pid, serial, product, vendor, in_adb, detail
 	          FROM usb_events WHERE 1=1`
 	var args []any
 	if serial != "" {
@@ -489,7 +492,7 @@ func (s *Store) ListUSBEvents(serial string, limit int) ([]USBEvent, error) {
 		var ts string
 		var inADB int
 		if err := rows.Scan(&e.ID, &ts, &e.Event, &e.Path, &e.VID, &e.PID,
-			&e.Serial, &e.Product, &e.Vendor, &inADB); err != nil {
+			&e.Serial, &e.Product, &e.Vendor, &inADB, &e.Detail); err != nil {
 			return nil, err
 		}
 		t, _ := time.Parse(time.RFC3339, ts)

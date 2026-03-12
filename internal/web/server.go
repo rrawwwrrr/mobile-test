@@ -971,6 +971,7 @@ a{color:#a5b4fc;text-decoration:none}a:hover{text-decoration:underline}
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:600;letter-spacing:.04em}
 .appeared{background:#14532d;color:#86efac}
 .disappeared{background:#450a0a;color:#f87171}
+.mode_change{background:#1c1a00;color:#fbbf24}
 .inadb{background:#1e3a5f;color:#93c5fd}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;padding:8px 12px;border-bottom:1px solid #1e2235;white-space:nowrap}
@@ -993,6 +994,7 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
     <option value="">все события</option>
     <option value="appeared">появился</option>
     <option value="disappeared">исчез</option>
+    <option value="mode_change">смена режима</option>
   </select>
   <select id="filter-adb" onchange="applyFilter()">
     <option value="">любой ADB</option>
@@ -1013,6 +1015,7 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
       <th>USB путь</th>
       <th>Вендор</th>
       <th>ADB</th>
+      <th>Детали</th>
     </tr>
   </thead>
   <tbody id="tbody"></tbody>
@@ -1040,7 +1043,9 @@ function applyFilter(){
   document.getElementById('tbody').innerHTML=rows.map(function(e){
     var evBadge=e.event==='appeared'
       ?'<span class="badge appeared">появился</span>'
-      :'<span class="badge disappeared">исчез</span>';
+      :e.event==='mode_change'
+        ?'<span class="badge mode_change">смена режима</span>'
+        :'<span class="badge disappeared">исчез</span>';
     var adbBadge=e.in_adb?'<span class="badge inadb">ADB</span>':'<span style="color:#334155">—</span>';
     var prod=e.product||e.vendor||'—';
     return '<tr>'+
@@ -1052,6 +1057,7 @@ function applyFilter(){
       '<td class="mono" style="color:#475569">'+esc(e.path)+'</td>'+
       '<td style="color:#64748b">'+esc(e.vendor||'—')+'</td>'+
       '<td>'+adbBadge+'</td>'+
+      '<td class="mono" style="color:#64748b;font-size:.7rem">'+esc(e.detail||'')+'</td>'+
     '</tr>';
   }).join('');
 }
