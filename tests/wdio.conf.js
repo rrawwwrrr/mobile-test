@@ -98,6 +98,13 @@ exports.config = {
       } catch (e) { /* pre-Android 13 or permission not declared */ }
     }
 
+    // Wake screen and dismiss keyguard (works only on devices without PIN/password).
+    try {
+      await driver.execute('mobile: shell', { command: 'input', args: ['keyevent', 'KEYCODE_WAKEUP'] });
+      await driver.execute('mobile: shell', { command: 'wm', args: ['dismiss-keyguard'] });
+      await driver.pause(500);
+    } catch (e) { /* screen already on or keyguard protected */ }
+
     // Dismiss any "display over other apps" / permission dialog still visible.
     // Tries both English and Russian button labels used by different ROM versions.
     try {
