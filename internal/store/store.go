@@ -10,6 +10,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+var msk = time.FixedZone("MSK", 3*3600)
+
 const schema = `
 CREATE TABLE IF NOT EXISTS runs (
 	id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -441,7 +443,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 			return nil, err
 		}
 		t, _ := time.Parse(time.RFC3339, finishedAt)
-		r.FinishedAt = t.Local()
+		r.FinishedAt = t.In(msk)
 		r.Found = found != 0
 		r.BootOK = bootOK != 0
 		r.HasLogs = hasLogs != 0
@@ -502,7 +504,7 @@ func (s *Store) ListEvents(serial string, limit int) ([]DeviceEvent, error) {
 			return nil, err
 		}
 		t, _ := time.Parse(time.RFC3339, ts)
-		e.TS = t.Local()
+		e.TS = t.In(msk)
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -565,7 +567,7 @@ func (s *Store) ListUSBEvents(serial string, limit int) ([]USBEvent, error) {
 			return nil, err
 		}
 		t, _ := time.Parse(time.RFC3339, ts)
-		e.TS = t.Local()
+		e.TS = t.In(msk)
 		e.InADB = inADB != 0
 		events = append(events, e)
 	}
