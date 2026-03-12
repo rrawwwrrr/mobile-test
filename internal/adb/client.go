@@ -148,6 +148,9 @@ func GrantAppiumPermissions(serial string) {
 	if granted > 0 {
 		log.Printf("[appium] granted SYSTEM_ALERT_WINDOW to %d package(s) on %s", granted, serial)
 	}
+	// Set default USB function to MTP so Android doesn't show the
+	// "USB-подключение" mode-selection dialog after reboot.
+	_ = exec.Command("adb", "-s", serial, "shell", "svc", "usb", "setFunctions", "mtp").Run()
 }
 
 // androidVendors maps USB vendor IDs (lowercase hex) to OEM names.

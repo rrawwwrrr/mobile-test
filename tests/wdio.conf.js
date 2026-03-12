@@ -105,6 +105,14 @@ exports.config = {
       await driver.pause(500);
     } catch (e) { /* screen already on or keyguard protected */ }
 
+    // Dismiss "USB-подключение" mode-selection dialog if present (KEYCODE_BACK).
+    // Also set MTP as default so the dialog doesn't reappear after next reboot.
+    try {
+      await driver.execute('mobile: shell', { command: 'svc', args: ['usb', 'setFunctions', 'mtp'] });
+      await driver.execute('mobile: shell', { command: 'input', args: ['keyevent', 'KEYCODE_BACK'] });
+      await driver.pause(300);
+    } catch (e) { /* no USB dialog, ignore */ }
+
     // Dismiss any "display over other apps" / permission dialog still visible.
     // Tries both English and Russian button labels used by different ROM versions.
     try {

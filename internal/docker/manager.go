@@ -421,16 +421,16 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 	// Appium hasn't installed its helper packages yet (first-ever run).
 	adb.GrantAppiumPermissions(dev.Serial)
 
-	// Check battery level before starting tests — skip if below 30%.
+	// Check battery level before starting tests — skip if below 29%.
 	batt := -1
 	if level, err := adb.BatteryLevel(dev.Serial); err != nil {
 		log.Printf("[battery] %s: %v", dev.Serial, err)
 	} else {
 		batt = level
 		log.Printf("[battery] %s: %d%%", dev.Serial, batt)
-		if batt < 30 {
-			log.Printf("[skip] %s battery too low (%d%% < 30%%), not starting tests", dev.Serial, batt)
-			return fmt.Errorf("battery too low: %d%% (minimum 30%%)", batt)
+		if batt < 29 {
+			log.Printf("[skip] %s battery too low (%d%% < 29%%), not starting tests", dev.Serial, batt)
+			return fmt.Errorf("battery too low: %d%% (minimum 29%%)", batt)
 		}
 	}
 

@@ -251,6 +251,7 @@ type DeviceStats struct {
 	AvgSetup   float64 `json:"avg_setup"`  // average setup/APK-install time (total - test, found=1 only)
 	MinSetup   float64 `json:"min_setup"`
 	MaxSetup   float64 `json:"max_setup"`
+	UsbPath    string  `json:"usb_path"`  // last known USB path from device_events
 }
 
 // PassRate returns the percentage of passing tests (0–100).
@@ -334,7 +335,19 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 		st.MaxSetup = maxSetup.Float64
 		stats = append(stats, st)
 	}
-	return stats, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Fill UsbPath from the most recent device_event per serial.
+	for i := range stats {
+		var path sql.NullString
+		_ = s.db.QueryRow(
+			`SELECT usb_path FROM device_events WHERE serial=? ORDER BY ts DESC LIMIT 1`,
+			stats[i].Serial,
+		).Scan(&path)
+		stats[i].UsbPath = path.String
+	}
+	return stats, nil
 }
 
 // Devices returns all unique serial numbers that have runs, ordered by most recent.
