@@ -367,7 +367,7 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 		// for Android/UiAutomator2, which talks to the device over ADB, not X11.
 		// The image ENTRYPOINT is ["sh","-c"], so Cmd[0] is the shell script.
 		Cmd: []string{fmt.Sprintf(
-			`appium --log /var/log/appium.log --port %d --address 0.0.0.0 --allow-insecure=uiautomator2:adb_shell`,
+			`appium --log /var/log/appium.log --log-timestamp --log-no-colors --port %d --address 0.0.0.0 --allow-insecure=uiautomator2:adb_shell`,
 			hostPort,
 		)},
 		Labels: map[string]string{
@@ -719,10 +719,7 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 		if err != nil {
 			log.Printf("[report] sqlite insert: %v", err)
 		} else {
-			if !summary.Found || summary.Failing > 0 {
-				// Save logs (and screenshot) for failed or crashed runs.
-				m.saveLogs(id, summary)
-			}
+			m.saveLogs(id, summary)
 			// Notify SSE clients about the new run.
 			if m.NotifyFn != nil {
 				m.NotifyFn()

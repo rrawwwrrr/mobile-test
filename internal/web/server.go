@@ -459,6 +459,7 @@ tr:hover td{background:#1a1d27}
     <div>
       <div class="mono" style="font-size:.85rem;color:#e2e8f0">{{.Serial}}</div>
       {{if .Model}}<div style="font-size:.75rem;color:#64748b;margin-top:2px">{{.Model}}</div>{{end}}
+      {{if .UsbPath}}<div class="mono" style="font-size:.7rem;color:#475569;margin-top:2px">{{.UsbPath}}</div>{{end}}
     </div>
     <div style="text-align:right">
       {{if eq .FailedRuns 0}}
@@ -513,39 +514,6 @@ tr:hover td{background:#1a1d27}
 </div>
 </div>
 
-<div id="epanel"{{if not .DeviceEvents}} style="display:none"{{end}}>
-<div style="padding:0 24px 24px">
-<h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Подключения устройств</h2>
-<div style="overflow-x:auto">
-<table>
-<thead><tr>
-  <th>Время</th><th>Устройство</th><th>Событие</th><th>USB путь</th><th>VID:PID</th><th>Длительность</th>
-</tr></thead>
-<tbody id="etbody">
-{{range .DeviceEvents}}
-<tr>
-  <td class="mono">{{.TS.Format "2006-01-02 15:04:05"}}</td>
-  <td>
-    <div class="mono">{{.Serial}}</div>
-    {{if .Model}}<div class="device">{{.Model}}</div>{{end}}
-  </td>
-  <td>
-    {{if eq .Event "connected"}}
-      <span class="badge pass">подключился</span>
-    {{else}}
-      <span class="badge fail">отключился</span>
-    {{end}}
-  </td>
-  <td class="mono" style="color:#94a3b8">{{if .USBPath}}{{.USBPath}}{{else}}—{{end}}</td>
-  <td class="mono" style="color:#64748b">{{if .VID}}{{.VID}}:{{.PID}}{{else}}—{{end}}</td>
-  <td style="color:#64748b" id="edur-{{.ID}}">—</td>
-</tr>
-{{end}}
-</tbody>
-</table>
-</div>
-</div>
-</div>
 
 <p class="empty" id="emsg"{{if .Runs}} style="display:none"{{end}}>Результатов пока нет.</p>
 <div id="twrap" style="overflow-x:auto{{if not .Runs}};display:none{{end}}">
@@ -648,7 +616,7 @@ function renderStats(stats){
     var badge=st.failed_runs===0?'<span class="badge pass">'+st.total_runs+' прогонов</span>':'<span class="badge fail">'+st.failed_runs+'/'+st.total_runs+' упало</span>';
     return '<div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">'+
-        '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+'</div>'+
+        '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+(st.usb_path?'<div class="mono" style="font-size:.7rem;color:#475569;margin-top:2px">'+esc(st.usb_path)+'</div>':'')+'</div>'+
         '<div style="text-align:right">'+badge+'</div>'+
       '</div>'+
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'+
@@ -746,12 +714,10 @@ async function refresh(){
   var p=new URLSearchParams(window.location.search);
   try{
     var rs=await fetch('/api/runs?'+p),
-        ss=await fetch('/api/stats?'+p),
-        es=await fetch('/api/device-events?'+p);
-    if(rs.ok&&ss.ok&&es.ok){
+        ss=await fetch('/api/stats?'+p);
+    if(rs.ok&&ss.ok){
       renderTable(await rs.json());
       renderStats(await ss.json());
-      renderEvents(await es.json());
     }
   }catch(e){console.error('refresh:',e)}
   try{
