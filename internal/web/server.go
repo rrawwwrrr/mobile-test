@@ -747,15 +747,17 @@ async function refresh(){
   try{
     var rs=await fetch('/api/runs?'+p),
         ss=await fetch('/api/stats?'+p),
-        es=await fetch('/api/device-events?'+p),
-        us=await fetch('/api/usb-devices');
-    if(rs.ok&&ss.ok&&es.ok&&us.ok){
+        es=await fetch('/api/device-events?'+p);
+    if(rs.ok&&ss.ok&&es.ok){
       renderTable(await rs.json());
       renderStats(await ss.json());
       renderEvents(await es.json());
-      renderUSBDevices(await us.json());
     }
   }catch(e){console.error('refresh:',e)}
+  try{
+    var us=await fetch('/api/usb-devices');
+    if(us.ok) renderUSBDevices(await us.json());
+  }catch(e){console.error('usb-devices:',e)}
 }
 
 // Build an SVG run-history chart: stacked pass/fail bars + pass-rate line.
