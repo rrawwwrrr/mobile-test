@@ -2,3 +2,7 @@ adbtest
 dist/
 apk/
 reports/
+adbtest
+adbtest.log
+reports/
+reports_backup*/

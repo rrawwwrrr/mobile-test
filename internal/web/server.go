@@ -467,6 +467,12 @@ tr:hover td{background:#1a1d27}
       {{else}}
         <span class="badge fail">{{.FailedRuns}}/{{.TotalRuns}} упало</span>
       {{end}}
+      <div style="margin-top:6px;font-size:.75rem">
+        {{if lt .LastBattery 0}}—
+        {{else if lt .LastBattery 30}}<span style="color:#f87171">🔋{{.LastBattery}}%</span>
+        {{else if lt .LastBattery 50}}<span style="color:#fbbf24">🔋{{.LastBattery}}%</span>
+        {{else}}<span style="color:#86efac">🔋{{.LastBattery}}%</span>{{end}}
+      </div>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
@@ -521,7 +527,7 @@ tr:hover td{background:#1a1d27}
 <thead><tr>
   <th>Время</th><th>Устройство</th><th>Итог</th>
   <th>Прошло</th><th>Упало</th><th>Ожидает</th>
-  <th>Подготовка</th><th>Тесты</th><th>Перезагрузка</th><th>Батарея</th><th>Логи</th>
+  <th>Подготовка</th><th>Тесты</th><th>Перезагрузка</th><th>Батарея</th><th>USB путь</th><th>Логи</th>
 </tr></thead>
 <tbody id="tbody">
 {{range .Runs}}
@@ -548,6 +554,7 @@ tr:hover td{background:#1a1d27}
     {{else if lt .BatteryPct 50}}<span style="color:#fbbf24">{{.BatteryPct}}%</span>
     {{else}}<span style="color:#86efac">{{.BatteryPct}}%</span>{{end}}
   </td>
+  <td class="mono" style="color:#475569;font-size:.75rem">{{if .UsbPath}}{{.UsbPath}}{{else}}—{{end}}</td>
   <td>
     {{if .HasLogs}}
     <button class="log-btn"    onclick="openLog({{.ID}},'test')">тест</button>
@@ -599,6 +606,7 @@ function renderTable(runs){
       '<td style="color:#94a3b8">'+fmtS(r.test_seconds)+'</td>'+
       '<td class="'+bc+'">'+boot+'</td>'+
       '<td>'+battFmt(r.battery_pct)+'</td>'+
+      '<td class="mono" style="color:#475569;font-size:.75rem">'+(r.usb_path||'—')+'</td>'+
       '<td>'+logs+'</td>'+
     '</tr>';
   }).join('');

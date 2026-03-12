@@ -93,6 +93,7 @@ type testRunSummary struct {
 	AppiumLog  []byte  // raw appium output (saved to disk on failure)
 	Screenshot []byte  // PNG screenshot taken before reboot on failure
 	BatteryPct int     // battery level at test start (-1 = unknown)
+	UsbPath    string  // sysfs USB path at time of run, e.g. "1-3.2"
 }
 
 func (s testRunSummary) deviceLabel() string {
@@ -494,12 +495,17 @@ func (m *Manager) removeDevice(ctx context.Context, dc deviceContainers) {
 // wdio spec-reporter summary, logs it to stdout, and returns a testRunSummary
 // for the file report (written later, after the device reboots).
 func (m *Manager) reportTestResult(ctx context.Context, serial string, dc deviceContainers) testRunSummary {
+	var usbPath string
+	if cached, ok := m.usbCache.Load(serial); ok {
+		usbPath = cached.([3]string)[0]
+	}
 	summary := testRunSummary{
 		Serial:     serial,
 		Model:      dc.DeviceModel,
 		StartedAt:  dc.TestStartedAt,
 		FinishedAt: time.Now(),
 		BatteryPct: dc.BatteryPct,
+		UsbPath:    usbPath,
 	}
 
 	rc, err := m.cli.ContainerLogs(ctx, dc.TestID, container.LogsOptions{
@@ -622,6 +628,12 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 	// Grant Appium overlay permission so the next test run is not blocked
 	// by the "display over other apps" system dialog.
 	adb.GrantAppiumPermissions(summary.Serial)
+	// Wait for the device to fully stabilize: some devices switch USB VID:PID
+	// after the initial ADB ready signal (e.g. 18d1→22d9 on Realme), briefly
+	// dropping off ADB. Without this pause, the next Appium session fails with
+	// "device not in the list of connected devices".
+	log.Printf("[reboot] %s stabilising (15s)...", summary.deviceLabel())
+	time.Sleep(15 * time.Second)
 	m.writeFileReport(summary, bootDuration, rebootAt, true)
 }
 
@@ -714,6 +726,7 @@ func (m *Manager) writeFileReport(summary testRunSummary, bootDuration time.Dura
 			TotalSeconds: summary.totalDuration().Seconds(),
 			TestSeconds:  summary.TestSecs,
 			BatteryPct:   summary.BatteryPct,
+			UsbPath:      summary.UsbPath,
 		}
 		id, err := m.store.Insert(run)
 		if err != nil {
