@@ -135,7 +135,17 @@ type Manager struct {
 
 // NewManager creates a new Manager. st may be nil (SQLite disabled).
 func NewManager(cli *client.Client, cfg Config, st *store.Store) *Manager {
-	return &Manager{cli: cli, config: cfg, store: st}
+	m := &Manager{cli: cli, config: cfg, store: st}
+	// Pre-populate usbCache from the most recent device_events so that
+	// usb_path is available even after a redeploy without a reconnect event.
+	if st != nil {
+		if events, err := st.LatestUSBInfoPerDevice(); err == nil {
+			for _, e := range events {
+				m.usbCache.Store(e.Serial, [3]string{e.USBPath, e.VID, e.PID})
+			}
+		}
+	}
+	return m
 }
 
 // Reconcile brings the set of running containers in sync with connected ADB devices.

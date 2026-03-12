@@ -532,6 +532,30 @@ func (s *Store) ListUSBEvents(serial string, limit int) ([]USBEvent, error) {
 	return events, rows.Err()
 }
 
+// LatestUSBInfoPerDevice returns the most recent usb_path/vid/pid from
+// device_events for each serial. Used to pre-populate usbCache on startup.
+func (s *Store) LatestUSBInfoPerDevice() ([]DeviceEvent, error) {
+	rows, err := s.db.Query(`
+		SELECT serial, MAX(ts), usb_path, vid, pid
+		FROM device_events
+		WHERE event = 'connected'
+		GROUP BY serial`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []DeviceEvent
+	for rows.Next() {
+		var e DeviceEvent
+		var ts string
+		if err := rows.Scan(&e.Serial, &ts, &e.USBPath, &e.VID, &e.PID); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1
