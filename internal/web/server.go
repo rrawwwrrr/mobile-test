@@ -522,10 +522,21 @@ tr:hover td{background:#1a1d27}
   </div>
   {{if gt .AvgSession 0.0}}
   <div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">
-    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">СЕССИЯ / APK (среднее)</div>
-    <div style="display:flex;gap:16px;font-size:.8rem">
-      <span style="color:#64748b">сессия <span style="color:#94a3b8;font-weight:600">{{fmtMs .AvgSession}}</span></span>
-      {{if gt .AvgApk 0.0}}<span style="color:#64748b">apk <span style="color:#94a3b8;font-weight:600">{{fmtMs .AvgApk}}</span></span>{{end}}
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">СЕССИЯ APPIUM</div>
+    <div style="display:flex;justify-content:space-between;font-size:.8rem">
+      <span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">{{fmtMs .AvgSession}}</span></span>
+      <span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">{{fmtMs .MinSession}}</span></span>
+      <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtMs .MaxSession}}</span></span>
+    </div>
+  </div>
+  {{end}}
+  {{if gt .AvgApk 0.0}}
+  <div style="background:#0f1117;border-radius:6px;padding:10px;margin-bottom:8px">
+    <div style="font-size:.7rem;color:#64748b;margin-bottom:6px">УСТАНОВКА APK</div>
+    <div style="display:flex;justify-content:space-between;font-size:.8rem">
+      <span style="color:#64748b">среднее <span style="color:#94a3b8;font-weight:600">{{fmtMs .AvgApk}}</span></span>
+      <span style="color:#64748b">мин <span style="color:#86efac;font-weight:600">{{fmtMs .MinApk}}</span></span>
+      <span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">{{fmtMs .MaxApk}}</span></span>
     </div>
   </div>
   {{end}}

@@ -274,8 +274,12 @@ type DeviceStats struct {
 	MaxSetup   float64 `json:"max_setup"`
 	UsbPath     string  `json:"usb_path"`     // last known USB path from device_events
 	LastBattery int     `json:"last_battery"` // battery_pct from most recent run; -1 = unknown
-	AvgSession  float64 `json:"avg_session"`  // average Appium session creation time in ms
-	AvgApk      float64 `json:"avg_apk"`      // average APK install time in ms
+	AvgSession  float64 `json:"avg_session"`
+	MinSession  float64 `json:"min_session"`
+	MaxSession  float64 `json:"max_session"`
+	AvgApk      float64 `json:"avg_apk"`
+	MinApk      float64 `json:"min_apk"`
+	MaxApk      float64 `json:"max_apk"`
 }
 
 // PassRate returns the percentage of passing tests (0–100).
@@ -315,7 +319,11 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 			MIN(CASE WHEN found=1 AND total_seconds>test_seconds THEN total_seconds-test_seconds END) AS min_setup,
 			MAX(CASE WHEN found=1 AND total_seconds>test_seconds THEN total_seconds-test_seconds END) AS max_setup,
 			AVG(CASE WHEN session_ms>0 THEN session_ms END) AS avg_session,
-			AVG(CASE WHEN apk_ms>0 THEN apk_ms END)         AS avg_apk
+			MIN(CASE WHEN session_ms>0 THEN session_ms END) AS min_session,
+			MAX(CASE WHEN session_ms>0 THEN session_ms END) AS max_session,
+			AVG(CASE WHEN apk_ms>0 THEN apk_ms END)         AS avg_apk,
+			MIN(CASE WHEN apk_ms>0 THEN apk_ms END)         AS min_apk,
+			MAX(CASE WHEN apk_ms>0 THEN apk_ms END)         AS max_apk
 		FROM runs WHERE 1=1`
 	var args []any
 	if !from.IsZero() {
@@ -340,7 +348,8 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 		var avgBoot, minBoot, maxBoot sql.NullFloat64
 		var avgTest, minTest, maxTest sql.NullFloat64
 		var avgSetup, minSetup, maxSetup sql.NullFloat64
-		var avgSession, avgApk sql.NullFloat64
+		var avgSession, minSession, maxSession sql.NullFloat64
+		var avgApk, minApk, maxApk sql.NullFloat64
 		if err := rows.Scan(
 			&st.Serial, &st.Model,
 			&st.TotalRuns, &st.FailedRuns,
@@ -348,7 +357,8 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 			&avgBoot, &minBoot, &maxBoot,
 			&avgTest, &minTest, &maxTest,
 			&avgSetup, &minSetup, &maxSetup,
-			&avgSession, &avgApk,
+			&avgSession, &minSession, &maxSession,
+			&avgApk, &minApk, &maxApk,
 		); err != nil {
 			return nil, err
 		}
@@ -362,7 +372,11 @@ func (s *Store) Stats(from, to time.Time) ([]DeviceStats, error) {
 		st.MinSetup = minSetup.Float64
 		st.MaxSetup = maxSetup.Float64
 		st.AvgSession = avgSession.Float64
+		st.MinSession = minSession.Float64
+		st.MaxSession = maxSession.Float64
 		st.AvgApk = avgApk.Float64
+		st.MinApk = minApk.Float64
+		st.MaxApk = maxApk.Float64
 		stats = append(stats, st)
 	}
 	if err := rows.Err(); err != nil {
