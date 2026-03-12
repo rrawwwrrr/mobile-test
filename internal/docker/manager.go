@@ -235,7 +235,7 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 			log.Printf("[cleanup] removing stopped test container for %s", serial)
 			_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
 			// Write test results to DB and file immediately — don't wait for reboot.
-			m.saveTestResult(summary)
+			summary = m.saveTestResult(summary)
 			m.rebooting.Store(serial, struct{}{})
 			go m.rebootAndReport(summary)
 			continue // test container will be recreated after device comes back
@@ -675,7 +675,8 @@ func (m *Manager) updateBootResult(runID int64, bootDuration time.Duration, boot
 
 // saveTestResult writes test results to the DB and file immediately after the
 // test finishes, without waiting for the device to reboot.
-func (m *Manager) saveTestResult(summary testRunSummary) {
+// Returns the updated summary with RunID filled in.
+func (m *Manager) saveTestResult(summary testRunSummary) testRunSummary {
 	if m.store != nil {
 		run := store.Run{
 			Serial:       summary.Serial,
@@ -702,6 +703,7 @@ func (m *Manager) saveTestResult(summary testRunSummary) {
 		}
 	}
 	m.writeFileReport(summary)
+	return summary
 }
 
 // writeFileReport appends a structured entry to reports/YYYY-MM-DD.log.
