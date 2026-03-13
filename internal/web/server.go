@@ -846,7 +846,7 @@ async function openHistory(serial, model){
     var s=encodeURIComponent(serial);
     var[re,ee]=await Promise.all([
       fetch('/api/runs?serial='+s+'&limit=500'),
-      fetch('/api/device-events?serial='+s+'&limit=500')
+      fetch('/api/usb-events?serial='+s+'&limit=500')
     ]);
     var runs=re.ok?await re.json():[];
     var evts=ee.ok?await ee.json():[];
@@ -860,8 +860,8 @@ async function openHistory(serial, model){
     var rows=items.map(function(item){
       if(item.type==='event'){
         var e=item.data;
-        var badge=e.event==='connected'?'<span class="badge pass">подключился</span>':'<span class="badge fail">отключился</span>';
-        var usb=e.usb_path?'<span class="mono" style="color:#94a3b8">'+esc(e.usb_path)+'</span>':'—';
+        var badge=e.event==='appeared'?'<span class="badge pass">появился</span>':e.event==='mode_change'?'<span class="badge" style="background:#1c1a00;color:#fbbf24">смена режима</span>':'<span class="badge fail">исчез</span>';
+        var usb=e.path?'<span class="mono" style="color:#94a3b8">'+esc(e.path)+'</span>':'—';
         var vp=(e.vid&&e.pid)?'<span class="mono" style="color:#64748b"> '+esc(e.vid)+':'+esc(e.pid)+'</span>':'';
         return '<tr style="opacity:.8">'+
           '<td class="mono" style="font-size:.75rem">'+fmtD(e.ts)+'</td>'+
