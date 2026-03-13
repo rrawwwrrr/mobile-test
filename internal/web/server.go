@@ -1003,9 +1003,7 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
     <option value="1">в ADB</option>
     <option value="0">не в ADB</option>
   </select>
-  <select id="filter-bus" onchange="applyFilter()">
-    <option value="">все шины</option>
-  </select>
+  <input type="text" id="filter-bus" placeholder="bus…" oninput="applyFilter()" style="width:70px">
   <span class="count" id="count">загрузка…</span>
 </div>
 <div style="padding:0 24px 24px;overflow-x:auto">
@@ -1073,10 +1071,6 @@ async function load(){
     var r=await fetch('/api/usb-events?limit=1000');
     if(!r.ok)throw new Error(r.status);
     allEvents=await r.json();
-    // populate bus filter with unique first path digits
-    var buses=[...new Set(allEvents.map(function(e){return pathBus(e.path)}).filter(Boolean))].sort();
-    var sel=document.getElementById('filter-bus');
-    buses.forEach(function(b){var o=document.createElement('option');o.value=b;o.textContent='шина '+b;sel.appendChild(o)});
     applyFilter();
   }catch(e){document.getElementById('count').textContent='Ошибка: '+e}
 }
