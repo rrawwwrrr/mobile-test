@@ -210,7 +210,7 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 		if _, connected := readyDevices[serial]; !connected {
 			log.Printf("[remove] device %s disconnected", serial)
 			m.logEvent(serial, dc.DeviceModel, "disconnected")
-			m.removeDevice(ctx, dc)
+			m.removeDevice(ctx, serial, dc)
 		}
 	}
 
@@ -241,6 +241,7 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 				log.Printf("[create] appium for %s: %v", serial, err)
 				continue
 			}
+			m.recordContainerEvent(serial, "appium_create", newDC.AppiumName)
 			// Update only Appium fields; preserve test container fields.
 			dc.AppiumID = newDC.AppiumID
 			dc.AppiumPort = newDC.AppiumPort
@@ -288,6 +289,8 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 		log.Printf("[create] test container for device %s → appium host.docker.internal:%d", serial, dc.AppiumPort)
 		if err := m.createTest(ctx, dev, dc.AppiumPort); err != nil {
 			log.Printf("[create] test container for %s: %v", serial, err)
+		} else {
+			m.recordContainerEvent(serial, "test_create", "tests-"+serial)
 		}
 	}
 
@@ -553,7 +556,7 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 }
 
 // removeDevice force-removes both containers for a device.
-func (m *Manager) removeDevice(ctx context.Context, dc deviceContainers) {
+func (m *Manager) removeDevice(ctx context.Context, serial string, dc deviceContainers) {
 	for _, id := range []string{dc.TestID, dc.AppiumID} {
 		if id == "" {
 			continue
@@ -561,6 +564,9 @@ func (m *Manager) removeDevice(ctx context.Context, dc deviceContainers) {
 		if err := m.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
 			log.Printf("[remove] container %s: %v", id[:12], err)
 		}
+	}
+	if serial != "" {
+		m.recordContainerEvent(serial, "container_remove", dc.AppiumName)
 	}
 }
 
@@ -903,6 +909,22 @@ func (m *Manager) logEvent(serial, model, event string) {
 		VID:     vid,
 		PID:     pid,
 	})
+}
+
+// recordContainerEvent writes a container lifecycle event to usb_events.
+func (m *Manager) recordContainerEvent(serial, event, detail string) {
+	if m.store == nil {
+		return
+	}
+	_ = m.store.InsertUSBEvent(store.USBEvent{
+		TS:     time.Now().UTC(),
+		Event:  event,
+		Serial: serial,
+		Detail: detail,
+	})
+	if m.NotifyFn != nil {
+		m.NotifyFn()
+	}
 }
 
 // sanitize replaces characters not safe for Docker container names with '-'.

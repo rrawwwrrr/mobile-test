@@ -566,7 +566,6 @@ tr:hover td{background:#1a1d27}
     </div>
   </div>
   {{end}}
-  <div class="running-info"></div>
   <button class="hist-btn" onclick="openHistory('{{.Serial}}','{{.Model}}')">📋 история</button>
 </div>
 {{end}}
@@ -718,7 +717,6 @@ function renderStats(stats){
           '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_apk/1000)+'</span></span>'+
         '</div>'+
       '</div>':'')+
-      '<div class="running-info"></div>'+
       '<button class="hist-btn" onclick="openHistory(\''+esc(st.serial)+'\',\''+esc(st.model||'')+'\')">📋 история</button>'+
     '</div>';
   }).join('');
@@ -947,7 +945,7 @@ async function openHistory(serial, model){
     var rows=items.map(function(item){
       if(item.type==='event'){
         var e=item.data;
-        var badge=e.event==='appeared'?'<span class="badge pass">появился</span>':e.event==='mode_change'?'<span class="badge" style="background:#1c1a00;color:#fbbf24">смена режима</span>':'<span class="badge fail">исчез</span>';
+        var badge=e.event==='appeared'?'<span class="badge pass">появился</span>':e.event==='mode_change'?'<span class="badge" style="background:#1c1a00;color:#fbbf24">смена режима</span>':e.event==='appium_create'?'<span class="badge" style="background:#0c1a2e;color:#60a5fa">🐳 appium создан</span>':e.event==='test_create'?'<span class="badge" style="background:#0c1a0c;color:#86efac">🧪 тест создан</span>':e.event==='container_remove'?'<span class="badge" style="background:#1a0c0c;color:#f87171">🗑 контейнеры удалены</span>':'<span class="badge fail">исчез</span>';
         var usb=e.path?'<span class="mono" style="color:#94a3b8">'+esc(e.path)+'</span>':'—';
         var vp=(e.vid&&e.pid)?'<span class="mono" style="color:#64748b"> '+esc(e.vid)+':'+esc(e.pid)+'</span>':'';
         return '<tr style="opacity:.8">'+
@@ -1133,11 +1131,7 @@ function renderEvents(events){
   });
   document.getElementById('count').textContent=rows.length+' из '+events.length+(events.length>=10000?' (все)':events.length>=1000?' (последние '+events.length+')':'');
   document.getElementById('tbody').innerHTML=rows.map(function(e){
-    var evBadge=e.event==='appeared'
-      ?'<span class="badge appeared">появился</span>'
-      :e.event==='mode_change'
-        ?'<span class="badge mode_change">смена режима</span>'
-        :'<span class="badge disappeared">исчез</span>';
+    var evBadge=e.event==='appeared'?'<span class="badge appeared">появился</span>':e.event==='mode_change'?'<span class="badge mode_change">смена режима</span>':e.event==='appium_create'?'<span class="badge" style="background:#0c1a2e;color:#60a5fa">🐳 appium создан</span>':e.event==='test_create'?'<span class="badge" style="background:#0c1a0c;color:#86efac">🧪 тест создан</span>':e.event==='container_remove'?'<span class="badge" style="background:#1a0c0c;color:#f87171">🗑 контейнеры удалены</span>':'<span class="badge disappeared">исчез</span>';
     var adbBadge=e.in_adb?'<span class="badge inadb">ADB</span>':'<span style="color:#334155">—</span>';
     var prod=e.product||e.vendor||'—';
     return '<tr>'+
