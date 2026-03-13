@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -284,8 +285,14 @@ func main() {
 		// Initial reconcile via ListDevices before track-devices connects.
 		reconcileDevices(ctx, mgr, nil)
 
-		// ADB track-devices: blocks and calls reconcile on every device change.
+		// ADB track-devices: blocks and calls reconcile only when list changes.
+		var prevSnapshot string
 		adb.TrackDevices(ctx, func(devices []adb.Device) {
+			snap := deviceSnapshot(devices)
+			if snap == prevSnapshot {
+				return
+			}
+			prevSnapshot = snap
 			reconcileDevices(ctx, mgr, devices)
 		})
 
@@ -294,6 +301,17 @@ func main() {
 		usbMon.Poll()
 		reconcileDevices(ctx, mgr, nil)
 	}
+}
+
+// deviceSnapshot returns a stable string key for a device list so we can
+// detect changes without calling reconcile on every track-devices update.
+func deviceSnapshot(devices []adb.Device) string {
+	parts := make([]string, len(devices))
+	for i, d := range devices {
+		parts[i] = d.Serial + "=" + d.State
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func reconcileDevices(ctx context.Context, mgr *docker.Manager, devices []adb.Device) {
