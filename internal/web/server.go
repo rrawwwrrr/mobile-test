@@ -115,6 +115,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/adb-unauthorized", s.handleAPIAdbUnauthorized)
 	mux.HandleFunc("/api/running", s.handleAPIRunning)
 	mux.HandleFunc("/api/usb-events", s.handleAPIUSBEvents)
+	mux.HandleFunc("/api/device-config", s.handleAPIDeviceConfig)
 	mux.HandleFunc("/usb", s.handleUSBPage)
 	mux.HandleFunc("/events", s.handleEvents)
 }
@@ -360,6 +361,55 @@ func (s *Server) handleAPIUSBEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(events)
+}
+
+func (s *Server) handleAPIDeviceConfig(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "no store", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		configs, err := s.store.AllDeviceConfigs()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		list := make([]store.DeviceConfig, 0, len(configs))
+		for _, c := range configs {
+			list = append(list, c)
+		}
+		json.NewEncoder(w).Encode(list)
+	case http.MethodPost:
+		var cfg store.DeviceConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if cfg.Serial == "" {
+			http.Error(w, "serial required", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.SetDeviceConfig(cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(cfg)
+	case http.MethodDelete:
+		serial := r.URL.Query().Get("serial")
+		if serial == "" {
+			http.Error(w, "serial required", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.DeleteDeviceConfig(serial); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{}`))
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleUSBPage(w http.ResponseWriter, r *http.Request) {
@@ -678,7 +728,7 @@ function renderStats(stats){
     var badge=st.failed_runs===0?'<span class="badge pass">'+st.total_runs+' прогонов</span>':'<span class="badge fail">'+st.failed_runs+'/'+st.total_runs+' упало</span>';
     return '<div data-serial="'+esc(st.serial)+'" style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">'+
-        '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+(st.usb_path?'<div class="mono" style="font-size:.7rem;color:#475569;margin-top:2px">'+esc(st.usb_path)+'</div>':'')+'</div>'+
+        '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+(st.usb_path?'<div class="mono" style="font-size:.7rem;color:#475569;margin-top:2px">'+esc(st.usb_path)+'</div>':'')+(devCfgs[st.serial]&&devCfgs[st.serial].test_vid?'<div class="mono" style="font-size:.65rem;color:#3b82f6;margin-top:2px">тест: '+esc(devCfgs[st.serial].test_vid)+':'+esc(devCfgs[st.serial].test_pid)+'</div>':'')+'</div>'+
         '<div style="text-align:right">'+badge+'<div style="margin-top:6px;font-size:.75rem">'+battFmt(st.last_battery)+'</div></div>'+
       '</div>'+
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'+
@@ -793,6 +843,7 @@ function renderUSBDevices(devs){
     }).join('');
 }
 
+var devCfgs={};
 async function refresh(){
   var p=new URLSearchParams(window.location.search);
   try{
@@ -815,6 +866,10 @@ async function refresh(){
     var rn=await fetch('/api/running');
     if(rn.ok) applyRunning(await rn.json());
   }catch(e){console.error('running:',e)}
+  try{
+    var dc=await fetch('/api/device-config');
+    if(dc.ok){var list=await dc.json();devCfgs={};(list||[]).forEach(function(c){devCfgs[c.serial]=c});}
+  }catch(e){}
 }
 
 // applyRunning overlays live container timing onto device stat cards.
@@ -1103,6 +1158,7 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
       <th>USB путь</th>
       <th>ADB</th>
       <th>Детали</th>
+      <th>Тест VID:PID</th>
     </tr>
   </thead>
   <tbody id="tbody"></tbody>
@@ -1116,6 +1172,20 @@ function fmtD(iso){
 }
 function p2(n){return String(n).padStart(2,'0')}
 function pathBus(path){return path?path.split('-')[0]:''}
+var devConfigs={};
+async function loadConfigs(){
+  try{var r=await fetch('/api/device-config');if(r.ok){var list=await r.json();devConfigs={};(list||[]).forEach(function(c){devConfigs[c.serial]=c});}}catch(e){}
+}
+async function setTestVidPid(serial,vid,pid){
+  await fetch('/api/device-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({serial:serial,test_vid:vid,test_pid:pid})});
+  await loadConfigs();
+  renderEvents(allEvents);
+}
+async function clearTestVidPid(serial){
+  await fetch('/api/device-config?serial='+encodeURIComponent(serial),{method:'DELETE'});
+  await loadConfigs();
+  renderEvents(allEvents);
+}
 function renderEvents(events){
   var evType=document.getElementById('filter-event').value;
   var adbF=document.getElementById('filter-adb').value;
@@ -1134,6 +1204,16 @@ function renderEvents(events){
     var evBadge=e.event==='appeared'?'<span class="badge appeared">появился</span>':e.event==='mode_change'?'<span class="badge mode_change">смена режима</span>':e.event==='appium_create'?'<span class="badge" style="background:#0c1a2e;color:#60a5fa">🐳 appium создан</span>':e.event==='test_create'?'<span class="badge" style="background:#0c1a0c;color:#86efac">🧪 тест создан</span>':e.event==='container_remove'?'<span class="badge" style="background:#1a0c0c;color:#f87171">🗑 контейнеры удалены</span>':'<span class="badge disappeared">исчез</span>';
     var adbBadge=e.in_adb?'<span class="badge inadb">ADB</span>':'<span style="color:#334155">—</span>';
     var prod=e.product||e.vendor||'—';
+    var configCell='<td>—</td>';
+    if(e.event==='mode_change'&&e.serial&&e.vid&&e.pid){
+      var cfg=devConfigs[e.serial];
+      var isSet=cfg&&cfg.test_vid.toLowerCase()===e.vid.toLowerCase()&&cfg.test_pid.toLowerCase()===e.pid.toLowerCase();
+      if(isSet){
+        configCell='<td><span class="mono" style="color:#86efac;font-size:.75rem">'+esc(e.vid)+':'+esc(e.pid)+'</span> <button onclick="clearTestVidPid(\''+esc(e.serial)+'\')" style="background:#450a0a;border:none;color:#fca5a5;border-radius:4px;padding:2px 6px;font-size:.7rem;cursor:pointer">✕</button></td>';
+      }else{
+        configCell='<td><button onclick="setTestVidPid(\''+esc(e.serial)+'\',\''+esc(e.vid)+'\',\''+esc(e.pid)+'\')" style="background:#1e2235;border:1px solid #3730a3;color:#a5b4fc;border-radius:4px;padding:2px 8px;font-size:.7rem;cursor:pointer">использовать</button></td>';
+      }
+    }
     return '<tr>'+
       '<td class="mono" style="color:#94a3b8;white-space:nowrap">'+fmtD(e.ts)+'</td>'+
       '<td>'+evBadge+'</td>'+
@@ -1143,6 +1223,7 @@ function renderEvents(events){
       '<td class="mono" style="color:#475569">'+esc(e.path)+'</td>'+
       '<td>'+adbBadge+'</td>'+
       '<td class="mono" style="color:#64748b;font-size:.7rem">'+esc(e.detail||'')+'</td>'+
+      configCell+
     '</tr>';
   }).join('');
 }
@@ -1171,7 +1252,7 @@ function applyFilter(){
   }
 }
 var lastSerial='';
-fetchAndRender('');
+loadConfigs().then(function(){fetchAndRender('')});
 var es=new EventSource('/events');
 es.onmessage=function(e){if(e.data==='refresh')fetchAndRender(document.getElementById('filter-serial').value||'')};
 </script>

@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS usb_events (
 );
 CREATE INDEX IF NOT EXISTS idx_usb_ts     ON usb_events(ts);
 CREATE INDEX IF NOT EXISTS idx_usb_serial ON usb_events(serial);
+CREATE TABLE IF NOT EXISTS device_config (
+	serial   TEXT PRIMARY KEY,
+	test_vid TEXT NOT NULL DEFAULT '',
+	test_pid TEXT NOT NULL DEFAULT ''
+);
 `
 
 // migrations adds columns/tables to existing databases that predate the current schema.
@@ -103,6 +108,12 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_usb_ts     ON usb_events(ts)`,
 	`CREATE INDEX IF NOT EXISTS idx_usb_serial ON usb_events(serial)`,
 	`ALTER TABLE usb_events ADD COLUMN detail TEXT NOT NULL DEFAULT ''`,
+	// device_config table (new in v1.8.59)
+	`CREATE TABLE IF NOT EXISTS device_config (
+		serial   TEXT PRIMARY KEY,
+		test_vid TEXT NOT NULL DEFAULT '',
+		test_pid TEXT NOT NULL DEFAULT ''
+	)`,
 }
 
 // Run holds the result of one test cycle for one device.
@@ -603,4 +614,46 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// DeviceConfig holds the test VID:PID filter for a device.
+type DeviceConfig struct {
+	Serial  string `json:"serial"`
+	TestVID string `json:"test_vid"`
+	TestPID string `json:"test_pid"`
+}
+
+// SetDeviceConfig inserts or replaces the test VID:PID for a device.
+func (s *Store) SetDeviceConfig(cfg DeviceConfig) error {
+	_, err := s.db.Exec(
+		`INSERT INTO device_config (serial, test_vid, test_pid)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(serial) DO UPDATE SET test_vid=excluded.test_vid, test_pid=excluded.test_pid`,
+		cfg.Serial, cfg.TestVID, cfg.TestPID,
+	)
+	return err
+}
+
+// DeleteDeviceConfig removes the test VID:PID config for a device.
+func (s *Store) DeleteDeviceConfig(serial string) error {
+	_, err := s.db.Exec(`DELETE FROM device_config WHERE serial=?`, serial)
+	return err
+}
+
+// AllDeviceConfigs returns all device configs keyed by serial.
+func (s *Store) AllDeviceConfigs() (map[string]DeviceConfig, error) {
+	rows, err := s.db.Query(`SELECT serial, test_vid, test_pid FROM device_config`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]DeviceConfig)
+	for rows.Next() {
+		var cfg DeviceConfig
+		if err := rows.Scan(&cfg.Serial, &cfg.TestVID, &cfg.TestPID); err != nil {
+			return nil, err
+		}
+		out[cfg.Serial] = cfg
+	}
+	return out, rows.Err()
 }

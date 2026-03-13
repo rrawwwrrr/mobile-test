@@ -12,9 +12,10 @@ import (
 
 // Monitor polls USB devices and records appear/disappear/mode_change events.
 type Monitor struct {
-	st   *store.Store
-	prev map[string]adb.USBAndroidDevice // keyed by USB path
-	mu   sync.Mutex
+	st           *store.Store
+	prev         map[string]adb.USBAndroidDevice // keyed by USB path
+	mu           sync.Mutex
+	OnModeChange func(serial, path, vid, pid string) // optional callback on VID:PID change
 }
 
 // NewMonitor creates a new USB Monitor.
@@ -70,6 +71,9 @@ func (m *Monitor) Poll() {
 				InADB:  d.InADB,
 				Detail: fmt.Sprintf("%s:%s → %s:%s", prev.VID, prev.PID, d.VID, d.PID),
 			})
+			if m.OnModeChange != nil && d.Serial != "" {
+				m.OnModeChange(d.Serial, d.Path, d.VID, d.PID)
+			}
 		} else if prev.InADB != d.InADB {
 			// Same device, ADB visibility changed.
 			m.record(store.USBEvent{

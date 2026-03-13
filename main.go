@@ -281,6 +281,7 @@ func main() {
 	defer httpServer.Shutdown(context.Background())
 
 	usbMon := usb.NewMonitor(st)
+	usbMon.OnModeChange = mgr.SetUSBInfo
 
 	if *watch {
 		log.Printf("Watch mode (interval=%s, appium=%s, tests=%s, base-port=%d)",

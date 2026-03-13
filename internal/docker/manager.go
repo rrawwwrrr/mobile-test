@@ -166,6 +166,28 @@ func NewManager(cli *client.Client, cfg Config, st *store.Store) *Manager {
 	return m
 }
 
+// SetUSBInfo updates usbCache for a device. Called by the USB monitor on mode_change.
+func (m *Manager) SetUSBInfo(serial, path, vid, pid string) {
+	if serial != "" {
+		m.usbCache.Store(serial, [3]string{path, vid, pid})
+	}
+}
+
+// vidPidOK returns true if the device's current VID:PID matches its configured
+// test VID:PID, or if no config is set.
+func (m *Manager) vidPidOK(serial string, configs map[string]store.DeviceConfig) bool {
+	cfg, ok := configs[serial]
+	if !ok || cfg.TestVID == "" {
+		return true
+	}
+	cached, ok := m.usbCache.Load(serial)
+	if !ok {
+		return false
+	}
+	info := cached.([3]string)
+	return strings.EqualFold(info[1], cfg.TestVID) && strings.EqualFold(info[2], cfg.TestPID)
+}
+
 // RunningDevices returns current Appium + test container state for all managed devices.
 func (m *Manager) RunningDevices(ctx context.Context) []RunningDevice {
 	managed, err := m.listManaged(ctx)
@@ -199,6 +221,17 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 		return fmt.Errorf("list managed containers: %w", err)
 	}
 
+	// Load per-device test VID:PID configs once per cycle.
+	var devConfigs map[string]store.DeviceConfig
+	if m.store != nil {
+		if dc, err := m.store.AllDeviceConfigs(); err == nil {
+			devConfigs = dc
+		}
+	}
+	if devConfigs == nil {
+		devConfigs = make(map[string]store.DeviceConfig)
+	}
+
 	readyDevices := make(map[string]adb.Device)
 	for _, d := range devices {
 		if d.IsReady() {
@@ -209,6 +242,10 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 	// Remove containers for disconnected devices.
 	for serial, dc := range existing {
 		if _, connected := readyDevices[serial]; !connected {
+			if !m.vidPidOK(serial, devConfigs) {
+				log.Printf("[skip] %s disconnected but VID:PID mismatch — likely mode change, keeping containers", serial)
+				continue
+			}
 			log.Printf("[remove] device %s disconnected", serial)
 			m.logEvent(serial, dc.DeviceModel, "disconnected")
 			m.removeDevice(ctx, serial, dc)
@@ -223,6 +260,10 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 		appiumExited := dc.AppiumID != "" && dc.AppiumStatus != "running"
 		isNewDevice := !running // device has no managed containers at all
 		if !running || dc.AppiumID == "" || appiumExited {
+			if !m.vidPidOK(serial, devConfigs) {
+				log.Printf("[skip] device %s connected but VID:PID mismatch (wrong mode), not creating containers", serial)
+				continue
+			}
 			if appiumExited {
 				log.Printf("[restart] appium exited for %s, removing and restarting", serial)
 				// Remove the exited appium container before creating a new one.
