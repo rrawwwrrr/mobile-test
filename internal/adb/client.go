@@ -1,9 +1,11 @@
 package adb
 
 import (
-	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -29,15 +31,21 @@ func ListDevices() ([]Device, error) {
 	if err != nil {
 		return nil, fmt.Errorf("adb devices: %w", err)
 	}
+	// Skip first line "List of devices attached"
+	body := ""
+	if idx := strings.Index(string(out), "\n"); idx >= 0 {
+		body = string(out)[idx+1:]
+	}
+	devices := parseDeviceList(body)
+	populateModels(devices)
+	return devices, nil
+}
 
+// parseDeviceList parses the raw device-list payload from the ADB server.
+func parseDeviceList(data string) []Device {
 	var devices []Device
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-
-	// First line is always "List of devices attached"
-	scanner.Scan()
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
@@ -45,16 +53,13 @@ func ListDevices() ([]Device, error) {
 		if len(parts) < 2 {
 			continue
 		}
-		devices = append(devices, Device{
-			Serial: parts[0],
-			State:  parts[1],
-		})
+		devices = append(devices, Device{Serial: parts[0], State: parts[1]})
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
+	return devices
+}
 
-	// Populate model name for ready devices.
+// populateModels fills Model for all ready devices via adb getprop.
+func populateModels(devices []Device) {
 	for i, d := range devices {
 		if !d.IsReady() {
 			continue
@@ -63,8 +68,74 @@ func ListDevices() ([]Device, error) {
 			devices[i].Model = strings.TrimSpace(string(b))
 		}
 	}
+}
 
-	return devices, nil
+// TrackDevices connects to the ADB server via TCP and calls onChange whenever
+// the device list changes. Reconnects automatically on error. Blocks until ctx
+// is cancelled.
+func TrackDevices(ctx context.Context, onChange func([]Device)) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		if err := trackOnce(ctx, onChange); err != nil {
+			log.Printf("[adb] track-devices: %v — reconnecting in 3s", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
+	}
+}
+
+func trackOnce(ctx context.Context, onChange func([]Device)) error {
+	conn, err := net.DialTimeout("tcp", "localhost:5037", 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	// Close connection when ctx is done.
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
+	const cmd = "host:track-devices"
+	if _, err := fmt.Fprintf(conn, "%04x%s", len(cmd), cmd); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+
+	status := make([]byte, 4)
+	if _, err := io.ReadFull(conn, status); err != nil {
+		return fmt.Errorf("read status: %w", err)
+	}
+	if string(status) != "OKAY" {
+		return fmt.Errorf("expected OKAY, got %q", status)
+	}
+
+	log.Printf("[adb] track-devices: connected to ADB server")
+	for {
+		// Each update is prefixed with a 4-hex-char length.
+		lenBuf := make([]byte, 4)
+		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			return fmt.Errorf("read length: %w", err)
+		}
+		n, err := strconv.ParseInt(string(lenBuf), 16, 32)
+		if err != nil {
+			return fmt.Errorf("parse length %q: %w", lenBuf, err)
+		}
+		data := make([]byte, n)
+		if n > 0 {
+			if _, err := io.ReadFull(conn, data); err != nil {
+				return fmt.Errorf("read data: %w", err)
+			}
+		}
+		devices := parseDeviceList(string(data))
+		populateModels(devices)
+		onChange(devices)
+	}
 }
 
 // Reboot sends `adb reboot` to the device.

@@ -265,34 +265,46 @@ func main() {
 	if *watch {
 		log.Printf("Watch mode (interval=%s, appium=%s, tests=%s, base-port=%d)",
 			*interval, *appiumImage, cfg.TestImage, *basePort)
-		ticker := time.NewTicker(*interval)
-		defer ticker.Stop()
 
-		usbMon.Poll()
-		reconcile(ctx, mgr)
-		for {
-			select {
-			case <-ctx.Done():
-				log.Println("Shutting down.")
-				return
-			case <-ticker.C:
-				usbMon.Poll()
-				reconcile(ctx, mgr)
+		// USB sysfs monitor runs on its own ticker (independent of ADB).
+		usbTicker := time.NewTicker(*interval)
+		defer usbTicker.Stop()
+		go func() {
+			usbMon.Poll()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-usbTicker.C:
+					usbMon.Poll()
+				}
 			}
-		}
+		}()
+
+		// Initial reconcile via ListDevices before track-devices connects.
+		reconcileDevices(ctx, mgr, nil)
+
+		// ADB track-devices: blocks and calls reconcile on every device change.
+		adb.TrackDevices(ctx, func(devices []adb.Device) {
+			reconcileDevices(ctx, mgr, devices)
+		})
+
+		log.Println("Shutting down.")
 	} else {
 		usbMon.Poll()
-		reconcile(ctx, mgr)
+		reconcileDevices(ctx, mgr, nil)
 	}
 }
 
-func reconcile(ctx context.Context, mgr *docker.Manager) {
-	devices, err := adb.ListDevices()
-	if err != nil {
-		log.Printf("adb list devices: %v", err)
-		return
+func reconcileDevices(ctx context.Context, mgr *docker.Manager, devices []adb.Device) {
+	if devices == nil {
+		var err error
+		devices, err = adb.ListDevices()
+		if err != nil {
+			log.Printf("adb list devices: %v", err)
+			return
+		}
 	}
-
 	ready := 0
 	for _, d := range devices {
 		if d.IsReady() {
