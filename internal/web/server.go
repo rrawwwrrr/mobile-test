@@ -1024,7 +1024,6 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
 </table>
 </div>
 <script>
-var allEvents=[];
 function esc(s){if(!s)return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtD(iso){
   var d=new Date(new Date(iso).getTime()+3*3600000);
@@ -1032,20 +1031,20 @@ function fmtD(iso){
 }
 function p2(n){return String(n).padStart(2,'0')}
 function pathBus(path){return path?path.split('-')[0]:''}
-function applyFilter(){
-  var serial=document.getElementById('filter-serial').value.toLowerCase();
+function renderEvents(events){
   var evType=document.getElementById('filter-event').value;
   var adbF=document.getElementById('filter-adb').value;
   var busF=document.getElementById('filter-bus').value;
-  var rows=allEvents.filter(function(e){
-    if(serial && !e.serial.toLowerCase().includes(serial) && !e.product.toLowerCase().includes(serial)) return false;
+  var serial=document.getElementById('filter-serial').value.toLowerCase();
+  var rows=events.filter(function(e){
+    if(serial && !e.serial.toLowerCase().includes(serial) && !(e.product||'').toLowerCase().includes(serial)) return false;
     if(evType && e.event!==evType) return false;
     if(adbF==='1' && !e.in_adb) return false;
     if(adbF==='0' && e.in_adb) return false;
     if(busF && pathBus(e.path)!==busF) return false;
     return true;
   });
-  document.getElementById('count').textContent=rows.length+' из '+allEvents.length;
+  document.getElementById('count').textContent=rows.length+' из '+events.length+(events.length>=10000?' (все)':events.length>=1000?' (последние '+events.length+')':'');
   document.getElementById('tbody').innerHTML=rows.map(function(e){
     var evBadge=e.event==='appeared'
       ?'<span class="badge appeared">появился</span>'
@@ -1066,15 +1065,32 @@ function applyFilter(){
     '</tr>';
   }).join('');
 }
-async function load(){
+var allEvents=[];
+var fetchTimer=null;
+async function fetchAndRender(serial){
+  var url=serial
+    ?'/api/usb-events?serial='+encodeURIComponent(serial)+'&limit=10000'
+    :'/api/usb-events?limit=1000';
   try{
-    var r=await fetch('/api/usb-events?limit=1000');
+    document.getElementById('count').textContent='загрузка…';
+    var r=await fetch(url);
     if(!r.ok)throw new Error(r.status);
     allEvents=await r.json();
-    applyFilter();
+    renderEvents(allEvents);
   }catch(e){document.getElementById('count').textContent='Ошибка: '+e}
 }
-load();
+function applyFilter(){
+  var serial=document.getElementById('filter-serial').value;
+  clearTimeout(fetchTimer);
+  // если изменился серийник — перезапрашиваем сервер с дебаунсом 400мс
+  if(serial!==lastSerial){
+    fetchTimer=setTimeout(function(){lastSerial=serial;fetchAndRender(serial)},400);
+  } else {
+    renderEvents(allEvents);
+  }
+}
+var lastSerial='';
+fetchAndRender('');
 </script>
 </body>
 </html>`
