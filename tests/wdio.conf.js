@@ -35,7 +35,10 @@ exports.config = {
       'appium:appPackage': 'io.appium.android.apis',
       'appium:appActivity': '.ApiDemos',
       // APK is installed manually in before() so we can time it precisely.
+      // autoLaunch=false prevents Appium from trying to start the app on session
+      // creation (before the APK is installed).
       'appium:noReset': true,
+      'appium:autoLaunch': false,
       'appium:forceAppLaunch': true,
       // Automatically grant all runtime permissions so no permission dialogs block tests.
       'appium:autoGrantPermissions': true,
