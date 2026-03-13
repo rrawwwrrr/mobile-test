@@ -145,9 +145,10 @@ type Manager struct {
 	store     *store.Store
 	NotifyFn    func() // called after each run is saved; used for SSE push
 	ReconcileFn func() // called when a test container exits; triggers a new reconcile
-	rebooting sync.Map   // serial → struct{}: device is mid-reboot, skip test creation
-	reportMu  sync.Mutex // serialises writes to the daily report file
-	usbCache  sync.Map   // serial → [3]string{path, vid, pid}: last known USB info
+	rebooting  sync.Map   // serial → struct{}: device is mid-reboot, skip test creation
+	reported   sync.Map   // containerID → struct{}: already processed, skip duplicate
+	reportMu   sync.Mutex // serialises writes to the daily report file
+	usbCache   sync.Map   // serial → [3]string{path, vid, pid}: last known USB info
 }
 
 // NewManager creates a new Manager. st may be nil (SQLite disabled).
@@ -270,6 +271,10 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 
 		// Remove a stopped test container, report results, then reboot device.
 		if dc.TestID != "" {
+			if _, alreadyDone := m.reported.LoadOrStore(dc.TestID, struct{}{}); alreadyDone {
+				log.Printf("[skip] already reported test container for %s", serial)
+				continue
+			}
 			summary := m.reportTestResult(ctx, serial, dc)
 			log.Printf("[cleanup] removing stopped test container for %s", serial)
 			_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
