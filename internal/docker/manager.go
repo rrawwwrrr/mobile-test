@@ -454,6 +454,25 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 
 	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
+		// If the container already exists (conflict), inspect it and reuse.
+		if strings.Contains(err.Error(), "Conflict") {
+			containers, lerr := m.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("name", "/"+name))})
+			if lerr == nil && len(containers) > 0 {
+				c := containers[0]
+				port := hostPort
+				if p, e := strconv.Atoi(c.Labels[labelPort]); e == nil {
+					port = p
+				}
+				log.Printf("[appium] reusing existing %s (id=%s) → port %d", name, c.ID[:12], port)
+				return &deviceContainers{
+					AppiumID:     c.ID,
+					AppiumPort:   port,
+					AppiumName:   name,
+					AppiumStatus: c.State,
+					DeviceModel:  dev.Model,
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("create: %w", err)
 	}
 	if err := m.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {

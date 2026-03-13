@@ -248,7 +248,24 @@ func main() {
 	hub := web.NewHub()
 	webSrv := web.NewServer(st, hub)
 	mgr.NotifyFn = hub.Notify
-	mgr.ReconcileFn = func() { reconcileDevices(ctx, mgr, nil) }
+	// Debounce ReconcileFn: coalesce rapid calls into one reconcile after 300ms.
+	reconcileCh := make(chan struct{}, 1)
+	go func() {
+		for range reconcileCh {
+			time.Sleep(300 * time.Millisecond)
+			// drain any queued signals
+			for len(reconcileCh) > 0 {
+				<-reconcileCh
+			}
+			reconcileDevices(ctx, mgr, nil)
+		}
+	}()
+	mgr.ReconcileFn = func() {
+		select {
+		case reconcileCh <- struct{}{}:
+		default:
+		}
+	}
 	webSrv.RunningFn = mgr.RunningDevices
 	mux := http.NewServeMux()
 	webSrv.RegisterRoutes(mux)
