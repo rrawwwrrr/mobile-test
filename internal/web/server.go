@@ -12,7 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"context"
+
 	"adbtest/internal/adb"
+	"adbtest/internal/docker"
 	"adbtest/internal/store"
 )
 
@@ -57,9 +60,10 @@ func (h *Hub) Notify() {
 
 // Server serves the HTTP dashboard.
 type Server struct {
-	store *store.Store
-	hub   *Hub
-	tmpl  *template.Template
+	store     *store.Store
+	hub       *Hub
+	tmpl      *template.Template
+	RunningFn func(ctx context.Context) []docker.RunningDevice
 }
 
 // NewServer creates a new Server.
@@ -109,6 +113,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/log", s.handleAPILog)
 	mux.HandleFunc("/api/usb-devices", s.handleAPIUSBDevices)
 	mux.HandleFunc("/api/adb-unauthorized", s.handleAPIAdbUnauthorized)
+	mux.HandleFunc("/api/running", s.handleAPIRunning)
 	mux.HandleFunc("/api/usb-events", s.handleAPIUSBEvents)
 	mux.HandleFunc("/usb", s.handleUSBPage)
 	mux.HandleFunc("/events", s.handleEvents)
@@ -288,6 +293,18 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleAPIRunning(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var result []docker.RunningDevice
+	if s.RunningFn != nil {
+		result = s.RunningFn(r.Context())
+	}
+	if result == nil {
+		result = []docker.RunningDevice{}
+	}
+	json.NewEncoder(w).Encode(result)
 }
 
 func (s *Server) handleAPIAdbUnauthorized(w http.ResponseWriter, r *http.Request) {
@@ -478,7 +495,7 @@ tr:hover td{background:#1a1d27}
 <h2 style="font-size:.85rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">Сводка по устройствам</h2>
 <div id="sgrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
 {{range .Stats}}
-<div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">
+<div data-serial="{{.Serial}}" style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
     <div>
       <div class="mono" style="font-size:.85rem;color:#e2e8f0">{{.Serial}}</div>
@@ -549,6 +566,7 @@ tr:hover td{background:#1a1d27}
     </div>
   </div>
   {{end}}
+  <div class="running-info"></div>
   <button class="hist-btn" onclick="openHistory('{{.Serial}}','{{.Model}}')">📋 история</button>
 </div>
 {{end}}
@@ -659,7 +677,7 @@ function renderStats(stats){
     var rc=rate<80?'#f87171':rate<100?'#fbbf24':'#86efac';
     var fc=st.total_fail>0?'#f87171':'#86efac';
     var badge=st.failed_runs===0?'<span class="badge pass">'+st.total_runs+' прогонов</span>':'<span class="badge fail">'+st.failed_runs+'/'+st.total_runs+' упало</span>';
-    return '<div style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">'+
+    return '<div data-serial="'+esc(st.serial)+'" style="background:#1a1d27;border:1px solid #2d3148;border-radius:10px;padding:16px">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">'+
         '<div><div class="mono" style="font-size:.85rem;color:#e2e8f0">'+esc(st.serial)+'</div>'+(st.model?'<div style="font-size:.75rem;color:#64748b;margin-top:2px">'+esc(st.model)+'</div>':'')+(st.usb_path?'<div class="mono" style="font-size:.7rem;color:#475569;margin-top:2px">'+esc(st.usb_path)+'</div>':'')+'</div>'+
         '<div style="text-align:right">'+badge+'<div style="margin-top:6px;font-size:.75rem">'+battFmt(st.last_battery)+'</div></div>'+
@@ -700,6 +718,7 @@ function renderStats(stats){
           '<span style="color:#64748b">макс <span style="color:#f87171;font-weight:600">'+fmtS(st.max_apk/1000)+'</span></span>'+
         '</div>'+
       '</div>':'')+
+      '<div class="running-info"></div>'+
       '<button class="hist-btn" onclick="openHistory(\''+esc(st.serial)+'\',\''+esc(st.model||'')+'\')">📋 история</button>'+
     '</div>';
   }).join('');
@@ -794,6 +813,40 @@ async function refresh(){
     var ua=await fetch('/api/adb-unauthorized');
     if(ua.ok) renderUnauthorized(await ua.json());
   }catch(e){console.error('adb-unauthorized:',e)}
+  try{
+    var rn=await fetch('/api/running');
+    if(rn.ok) applyRunning(await rn.json());
+  }catch(e){console.error('running:',e)}
+}
+
+// applyRunning overlays live container timing onto device stat cards.
+function applyRunning(devs){
+  var bySerial={};
+  (devs||[]).forEach(function(d){bySerial[d.serial]=d;});
+  document.querySelectorAll('[data-serial]').forEach(function(card){
+    var serial=card.getAttribute('data-serial');
+    var el=card.querySelector('.running-info');
+    if(!el)return;
+    var d=bySerial[serial];
+    if(!d){el.innerHTML='';return;}
+    var appiumAge=d.appium_started_at?elapsed(d.appium_started_at):'—';
+    var testAge=d.has_test&&d.test_started_at?elapsed(d.test_started_at):'—';
+    el.innerHTML=
+      '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #2d3148;font-size:.72rem;color:#64748b">'+
+        '<div style="display:flex;justify-content:space-between;margin-bottom:3px">'+
+          '<span>🐳 Appium</span><span style="color:#94a3b8">'+appiumAge+'</span>'+
+        '</div>'+
+        (d.has_test?
+          '<div style="display:flex;justify-content:space-between">'+
+            '<span>🧪 Тест</span><span style="color:#94a3b8">'+testAge+'</span>'+
+          '</div>':'<div style="color:#475569">тест не запущен</div>')+
+      '</div>';
+  });
+}
+function elapsed(iso){
+  var s=Math.floor((Date.now()-new Date(iso).getTime())/1000);
+  if(s<0)s=0;
+  return s<60?s+'с':s<3600?Math.floor(s/60)+'м '+(s%60)+'с':Math.floor(s/3600)+'ч '+Math.floor((s%3600)/60)+'м';
 }
 
 // Build an SVG run-history chart: stacked pass/fail bars + pass-rate line.

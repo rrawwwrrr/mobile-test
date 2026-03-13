@@ -32,8 +32,9 @@ const (
 	labelPort      = "adbtest.port"
 	labelRole      = "adbtest.role"
 	labelModel     = "adbtest.model"
-	labelStartedAt = "adbtest.started_at" // RFC3339 timestamp when test container was created
-	labelBattery   = "adbtest.battery"    // battery % at test start (-1 = unknown)
+	labelStartedAt        = "adbtest.started_at"         // RFC3339 timestamp when test container was created
+	labelAppiumStartedAt  = "adbtest.appium_started_at"  // RFC3339 timestamp when appium container was created
+	labelBattery          = "adbtest.battery"             // battery % at test start (-1 = unknown)
 
 	roleAppium = "appium"
 	roleTests  = "tests"
@@ -68,10 +69,11 @@ type Config struct {
 
 // deviceContainers tracks the pair of containers managed for one device.
 type deviceContainers struct {
-	AppiumID     string
-	AppiumPort   int
-	AppiumName   string
-	AppiumStatus string // "running" | "exited" | "created" | ""
+	AppiumID        string
+	AppiumPort      int
+	AppiumName      string
+	AppiumStatus    string    // "running" | "exited" | "created" | ""
+	AppiumStartedAt time.Time // when the appium container was started
 
 	TestID        string
 	TestStatus    string    // "running" | "exited" | "created" | ""
@@ -127,6 +129,15 @@ func (s testRunSummary) setupDuration() time.Duration {
 	return total - test
 }
 
+// RunningDevice describes the live container state for one device.
+type RunningDevice struct {
+	Serial          string    `json:"serial"`
+	AppiumPort      int       `json:"appium_port"`
+	AppiumStartedAt time.Time `json:"appium_started_at"`
+	TestStartedAt   time.Time `json:"test_started_at"`
+	HasTest         bool      `json:"has_test"`
+}
+
 // Manager handles the lifecycle of Appium (and optionally test) Docker containers.
 type Manager struct {
 	cli       *client.Client
@@ -151,6 +162,28 @@ func NewManager(cli *client.Client, cfg Config, st *store.Store) *Manager {
 		}
 	}
 	return m
+}
+
+// RunningDevices returns current Appium + test container state for all managed devices.
+func (m *Manager) RunningDevices(ctx context.Context) []RunningDevice {
+	managed, err := m.listManaged(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]RunningDevice, 0, len(managed))
+	for serial, dc := range managed {
+		if dc.AppiumStatus != "running" {
+			continue
+		}
+		out = append(out, RunningDevice{
+			Serial:          serial,
+			AppiumPort:      dc.AppiumPort,
+			AppiumStartedAt: dc.AppiumStartedAt,
+			TestStartedAt:   dc.TestStartedAt,
+			HasTest:         dc.TestStatus == "running",
+		})
+	}
+	return out
 }
 
 // Reconcile brings the set of running containers in sync with connected ADB devices.
@@ -325,6 +358,10 @@ func (m *Manager) listManaged(ctx context.Context) (map[string]deviceContainers,
 			dc.AppiumPort = port
 			dc.AppiumName = name
 			dc.AppiumStatus = c.State // "running", "exited", etc.
+			if ts := c.Labels[labelAppiumStartedAt]; ts != "" {
+				t, _ := time.Parse(time.RFC3339, ts)
+				dc.AppiumStartedAt = t
+			}
 		case roleTests:
 			dc.TestID = c.ID
 			dc.TestStatus = c.State // "running", "exited", etc.
@@ -389,11 +426,12 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 			hostPort,
 		)},
 		Labels: map[string]string{
-			labelManaged: "true",
-			labelDevice:  dev.Serial,
-			labelRole:    roleAppium,
-			labelPort:    strconv.Itoa(hostPort),
-			labelModel:   dev.Model,
+			labelManaged:         "true",
+			labelDevice:          dev.Serial,
+			labelRole:            roleAppium,
+			labelPort:            strconv.Itoa(hostPort),
+			labelModel:           dev.Model,
+			labelAppiumStartedAt: time.Now().UTC().Format(time.RFC3339),
 		},
 	}
 
@@ -414,13 +452,15 @@ func (m *Manager) createAppium(ctx context.Context, dev adb.Device, hostPort int
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
+	now := time.Now().UTC()
 	log.Printf("[appium] started %s (id=%s, host-network) → port %d", name, resp.ID[:12], hostPort)
 	return &deviceContainers{
-		AppiumID:     resp.ID,
-		AppiumPort:   hostPort,
-		AppiumName:   name,
-		AppiumStatus: "running",
-		DeviceModel:  dev.Model,
+		AppiumID:        resp.ID,
+		AppiumPort:      hostPort,
+		AppiumName:      name,
+		AppiumStatus:    "running",
+		AppiumStartedAt: now,
+		DeviceModel:     dev.Model,
 	}, nil
 }
 

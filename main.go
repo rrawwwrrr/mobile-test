@@ -248,6 +248,7 @@ func main() {
 	hub := web.NewHub()
 	webSrv := web.NewServer(st, hub)
 	mgr.NotifyFn = hub.Notify
+	webSrv.RunningFn = mgr.RunningDevices
 	mux := http.NewServeMux()
 	webSrv.RegisterRoutes(mux)
 	webSrv.ServeAPKDir(mux, filepath.Dir(absAPK))
