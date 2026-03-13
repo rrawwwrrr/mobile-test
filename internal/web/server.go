@@ -1125,6 +1125,8 @@ function applyFilter(){
 }
 var lastSerial='';
 fetchAndRender('');
+var es=new EventSource('/events');
+es.onmessage=function(e){if(e.data==='refresh')fetchAndRender(document.getElementById('filter-serial').value||'')};
 </script>
 </body>
 </html>`
