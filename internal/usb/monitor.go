@@ -70,6 +70,15 @@ func (m *Monitor) Poll() {
 				InADB:  d.InADB,
 				Detail: fmt.Sprintf("%s:%s → %s:%s", prev.VID, prev.PID, d.VID, d.PID),
 			})
+		} else if prev.InADB != d.InADB {
+			// Same device, ADB visibility changed.
+			m.record(store.USBEvent{
+				TS: now, Event: "mode_change",
+				Path: d.Path, VID: d.VID, PID: d.PID,
+				Serial: d.Serial, Product: d.Product, Vendor: d.Vendor,
+				InADB:  d.InADB,
+				Detail: fmt.Sprintf("adb: %v → %v", prev.InADB, d.InADB),
+			})
 		}
 	}
 
