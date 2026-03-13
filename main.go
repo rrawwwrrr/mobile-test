@@ -70,7 +70,8 @@ func ensureAPK(path, url string) error {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 	log.Printf("[apk] downloading %s → %s", url, path)
-	resp, err := http.Get(url) //nolint:noctx
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("get: %w", err)
 	}
