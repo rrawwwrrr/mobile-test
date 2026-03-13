@@ -143,7 +143,8 @@ type Manager struct {
 	cli       *client.Client
 	config    Config
 	store     *store.Store
-	NotifyFn  func()     // called after each run is saved; used for SSE push
+	NotifyFn    func() // called after each run is saved; used for SSE push
+	ReconcileFn func() // called when a test container exits; triggers a new reconcile
 	rebooting sync.Map   // serial → struct{}: device is mid-reboot, skip test creation
 	reportMu  sync.Mutex // serialises writes to the daily report file
 	usbCache  sync.Map   // serial → [3]string{path, vid, pid}: last known USB info
@@ -533,6 +534,21 @@ func (m *Manager) createTest(ctx context.Context, dev adb.Device, appiumPort int
 	}
 
 	log.Printf("[tests] started %s (id=%s) → appium host.docker.internal:%d", name, resp.ID[:12], appiumPort)
+
+	// When the container exits, trigger reconcile so results are processed immediately.
+	if m.ReconcileFn != nil {
+		id := resp.ID
+		fn := m.ReconcileFn
+		go func() {
+			waitC, errC := m.cli.ContainerWait(context.Background(), id, container.WaitConditionNotRunning)
+			select {
+			case <-waitC:
+			case <-errC:
+			}
+			fn()
+		}()
+	}
+
 	return nil
 }
 

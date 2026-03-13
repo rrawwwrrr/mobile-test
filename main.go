@@ -248,6 +248,7 @@ func main() {
 	hub := web.NewHub()
 	webSrv := web.NewServer(st, hub)
 	mgr.NotifyFn = hub.Notify
+	mgr.ReconcileFn = func() { reconcileDevices(ctx, mgr, nil) }
 	webSrv.RunningFn = mgr.RunningDevices
 	mux := http.NewServeMux()
 	webSrv.RegisterRoutes(mux)
@@ -285,21 +286,6 @@ func main() {
 
 		// Initial reconcile via ListDevices before track-devices connects.
 		reconcileDevices(ctx, mgr, nil)
-
-		// Fallback ticker: reconcile even when ADB state doesn't change
-		// (e.g. test container exited but device stays connected).
-		go func() {
-			t := time.NewTicker(*interval)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					reconcileDevices(ctx, mgr, nil)
-				}
-			}
-		}()
 
 		// ADB track-devices: blocks and calls reconcile only when list changes.
 		var prevSnapshot string
