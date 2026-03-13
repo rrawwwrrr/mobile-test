@@ -545,8 +545,8 @@ func (s *Store) ListUSBEvents(serial string, limit int) ([]USBEvent, error) {
 	          FROM usb_events WHERE 1=1`
 	var args []any
 	if serial != "" {
-		query += ` AND serial = ?`
-		args = append(args, serial)
+		query += ` AND (serial LIKE ? OR product LIKE ?)`
+		args = append(args, "%"+serial+"%", "%"+serial+"%")
 	}
 	query += ` ORDER BY ts DESC LIMIT ?`
 	args = append(args, limit)
