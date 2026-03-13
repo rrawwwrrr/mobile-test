@@ -108,6 +108,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/device-events", s.handleAPIDeviceEvents)
 	mux.HandleFunc("/api/log", s.handleAPILog)
 	mux.HandleFunc("/api/usb-devices", s.handleAPIUSBDevices)
+	mux.HandleFunc("/api/adb-unauthorized", s.handleAPIAdbUnauthorized)
 	mux.HandleFunc("/api/usb-events", s.handleAPIUSBEvents)
 	mux.HandleFunc("/usb", s.handleUSBPage)
 	mux.HandleFunc("/events", s.handleEvents)
@@ -289,6 +290,21 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func (s *Server) handleAPIAdbUnauthorized(w http.ResponseWriter, r *http.Request) {
+	devs, _ := adb.ListDevices()
+	var result []adb.Device
+	for _, d := range devs {
+		if d.State == "unauthorized" {
+			result = append(result, d)
+		}
+	}
+	if result == nil {
+		result = []adb.Device{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 func (s *Server) handleAPIUSBDevices(w http.ResponseWriter, r *http.Request) {
 	usbDevs := adb.USBAndroidDevices()
 	// Mark which ones are visible in ADB.
@@ -454,6 +470,7 @@ tr:hover td{background:#1a1d27}
   <span class="count" id="rcount">{{len .Runs}} записей</span>
 </div>
 
+<div id="adb-unauth" style="padding:0 24px 4px"></div>
 <div id="usb-ghost" style="padding:0 24px 4px"></div>
 
 <div id="spanel"{{if not .Stats}} style="display:none"{{end}}>
@@ -725,6 +742,19 @@ function renderEvents(events){
   }).join('');
 }
 
+function renderUnauthorized(devs){
+  var el=document.getElementById('adb-unauth');
+  if(!el)return;
+  if(!devs||!devs.length){el.innerHTML='';return;}
+  el.innerHTML='<div style="margin-bottom:8px;font-size:.7rem;color:#f87171;text-transform:uppercase;letter-spacing:.05em">⚠ ADB не авторизовано — разреши отладку на устройстве</div>'+
+    devs.map(function(d){
+      return '<div style="display:inline-block;vertical-align:top;background:#1a0a0a;border:1px dashed #7f1d1d;border-radius:10px;padding:12px 16px;margin:0 8px 8px 0;min-width:180px">'+
+        '<div class="mono" style="font-size:.8rem;color:#fca5a5">'+esc(d.Serial)+'</div>'+
+        '<div style="font-size:.7rem;color:#f87171;margin-top:4px">unauthorized</div>'+
+      '</div>';
+    }).join('');
+}
+
 function renderUSBDevices(devs){
   // Show devices visible in USB but not yet in ADB (e.g. USB debugging disabled).
   var ghost=devs.filter(function(d){return !d.in_adb;});
@@ -760,6 +790,10 @@ async function refresh(){
     var us=await fetch('/api/usb-devices');
     if(us.ok) renderUSBDevices(await us.json());
   }catch(e){console.error('usb-devices:',e)}
+  try{
+    var ua=await fetch('/api/adb-unauthorized');
+    if(ua.ok) renderUnauthorized(await ua.json());
+  }catch(e){console.error('adb-unauthorized:',e)}
 }
 
 // Build an SVG run-history chart: stacked pass/fail bars + pass-rate line.
