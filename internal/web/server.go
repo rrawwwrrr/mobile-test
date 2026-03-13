@@ -1003,6 +1003,9 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
     <option value="1">в ADB</option>
     <option value="0">не в ADB</option>
   </select>
+  <select id="filter-bus" onchange="applyFilter()">
+    <option value="">все шины</option>
+  </select>
   <span class="count" id="count">загрузка…</span>
 </div>
 <div style="padding:0 24px 24px;overflow-x:auto">
@@ -1015,7 +1018,6 @@ input[type=text]:focus,select:focus{border-color:#a5b4fc}
       <th>Серийный номер</th>
       <th>VID:PID</th>
       <th>USB путь</th>
-      <th>Вендор</th>
       <th>ADB</th>
       <th>Детали</th>
     </tr>
@@ -1031,15 +1033,18 @@ function fmtD(iso){
   return d.getUTCFullYear()+'-'+p2(d.getUTCMonth()+1)+'-'+p2(d.getUTCDate())+' '+p2(d.getUTCHours())+':'+p2(d.getUTCMinutes())+':'+p2(d.getUTCSeconds());
 }
 function p2(n){return String(n).padStart(2,'0')}
+function pathBus(path){return path?path.split('-')[0]:''}
 function applyFilter(){
   var serial=document.getElementById('filter-serial').value.toLowerCase();
   var evType=document.getElementById('filter-event').value;
   var adbF=document.getElementById('filter-adb').value;
+  var busF=document.getElementById('filter-bus').value;
   var rows=allEvents.filter(function(e){
     if(serial && !e.serial.toLowerCase().includes(serial) && !e.product.toLowerCase().includes(serial)) return false;
     if(evType && e.event!==evType) return false;
     if(adbF==='1' && !e.in_adb) return false;
     if(adbF==='0' && e.in_adb) return false;
+    if(busF && pathBus(e.path)!==busF) return false;
     return true;
   });
   document.getElementById('count').textContent=rows.length+' из '+allEvents.length;
@@ -1058,7 +1063,6 @@ function applyFilter(){
       '<td class="mono" style="color:#94a3b8">'+esc(e.serial||'—')+'</td>'+
       '<td class="mono" style="color:#64748b">'+esc(e.vid)+':'+esc(e.pid)+'</td>'+
       '<td class="mono" style="color:#475569">'+esc(e.path)+'</td>'+
-      '<td style="color:#64748b">'+esc(e.vendor||'—')+'</td>'+
       '<td>'+adbBadge+'</td>'+
       '<td class="mono" style="color:#64748b;font-size:.7rem">'+esc(e.detail||'')+'</td>'+
     '</tr>';
@@ -1069,6 +1073,10 @@ async function load(){
     var r=await fetch('/api/usb-events?limit=1000');
     if(!r.ok)throw new Error(r.status);
     allEvents=await r.json();
+    // populate bus filter with unique first path digits
+    var buses=[...new Set(allEvents.map(function(e){return pathBus(e.path)}).filter(Boolean))].sort();
+    var sel=document.getElementById('filter-bus');
+    buses.forEach(function(b){var o=document.createElement('option');o.value=b;o.textContent='шина '+b;sel.appendChild(o)});
     applyFilter();
   }catch(e){document.getElementById('count').textContent='Ошибка: '+e}
 }
