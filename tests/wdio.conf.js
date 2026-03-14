@@ -117,13 +117,34 @@ exports.config = {
       await driver.pause(500);
     } catch (e) { /* screen already on or keyguard protected */ }
 
-    // Dismiss "USB-подключение" mode-selection dialog if present (KEYCODE_BACK).
-    // Also set MTP as default so the dialog doesn't reappear after next reboot.
+    // Dismiss "USB-подключение" mode-selection dialog if present.
+    // First set MTP as default so the dialog doesn't reappear after next reboot,
+    // then try to find and click the Cancel button (various label variants by ROM).
     try {
       await driver.execute('mobile: shell', { command: 'svc', args: ['usb', 'setFunctions', 'mtp'] });
-      await driver.execute('mobile: shell', { command: 'input', args: ['keyevent', 'KEYCODE_BACK'] });
-      await driver.pause(300);
-    } catch (e) { /* no USB dialog, ignore */ }
+    } catch (e) { /* ignore */ }
+    try {
+      const cancelBtn = await driver.$(
+        '//*[@text="ОТМЕНА" or @text="Отмена" or @text="отмена" or ' +
+        '@text="CANCEL" or @text="Cancel" or @text="cancel" or ' +
+        '@text="DISMISS" or @text="Dismiss" or @text="Закрыть" or @text="ЗАКРЫТЬ"]'
+      );
+      if (await cancelBtn.isDisplayed()) {
+        console.log('[before] dismissing USB dialog via Cancel button');
+        await cancelBtn.click();
+        await driver.pause(500);
+      } else {
+        // Fallback to KEYCODE_BACK
+        await driver.execute('mobile: shell', { command: 'input', args: ['keyevent', 'KEYCODE_BACK'] });
+        await driver.pause(300);
+      }
+    } catch (e) {
+      // No dialog visible — try KEYCODE_BACK just in case
+      try {
+        await driver.execute('mobile: shell', { command: 'input', args: ['keyevent', 'KEYCODE_BACK'] });
+        await driver.pause(300);
+      } catch (_) { /* ignore */ }
+    }
 
     // Dismiss any "display over other apps" / permission dialog still visible.
     // Tries both English and Russian button labels used by different ROM versions.
