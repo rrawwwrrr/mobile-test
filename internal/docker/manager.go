@@ -792,6 +792,11 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 	log.Printf("[reboot] %s stabilising (15s)...", summary.deviceLabel())
 	time.Sleep(15 * time.Second)
 	m.updateBootResult(summary.RunID, bootDuration, true)
+	// Trigger reconcile so tests start immediately without waiting for a
+	// track-devices event (device state is already stable at this point).
+	if m.ReconcileFn != nil {
+		m.ReconcileFn()
+	}
 }
 
 // fmtDuration formats a duration as "1m 5s" or "45s".
