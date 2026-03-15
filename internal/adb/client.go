@@ -71,12 +71,16 @@ func populateModels(devices []Device) {
 }
 
 // TrackDevices connects to the ADB server via TCP and calls onChange whenever
-// the device list changes. Reconnects automatically on error. Blocks until ctx
-// is cancelled.
-func TrackDevices(ctx context.Context, onChange func([]Device)) {
+// the device list changes. onReconnect (optional) is called each time the
+// connection is re-established so callers can reset any dedup state.
+// Reconnects automatically on error. Blocks until ctx is cancelled.
+func TrackDevices(ctx context.Context, onChange func([]Device), onReconnect func()) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return
+		}
+		if onReconnect != nil {
+			onReconnect()
 		}
 		if err := trackOnce(ctx, onChange); err != nil {
 			// On a read timeout we reconnect immediately (planned keepalive cycle).

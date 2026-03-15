@@ -769,12 +769,11 @@ func (m *Manager) reportTestResult(ctx context.Context, serial string, dc device
 // rebootAndReport reboots the device, waits for it to come back, then updates
 // the already-inserted DB row with boot timing.
 func (m *Manager) rebootAndReport(summary testRunSummary) {
-	defer m.rebooting.Delete(summary.Serial)
-
 	log.Printf("[reboot] rebooting %s...", summary.deviceLabel())
 
 	if err := adb.Reboot(summary.Serial); err != nil {
 		log.Printf("[reboot] %s: %v", summary.Serial, err)
+		m.rebooting.Delete(summary.Serial)
 		m.updateBootResult(summary.RunID, 0, false)
 		return
 	}
@@ -782,6 +781,7 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 	bootDuration, err := adb.WaitForReady(summary.Serial, 5*time.Minute)
 	if err != nil {
 		log.Printf("[reboot] %s: %v", summary.Serial, err)
+		m.rebooting.Delete(summary.Serial)
 		m.updateBootResult(summary.RunID, bootDuration, false)
 		return
 	}
@@ -795,6 +795,10 @@ func (m *Manager) rebootAndReport(summary testRunSummary) {
 	log.Printf("[reboot] %s stabilising (15s)...", summary.deviceLabel())
 	time.Sleep(15 * time.Second)
 	m.updateBootResult(summary.RunID, bootDuration, true)
+	// Clear rebooting BEFORE triggering reconcile so the reconcile sees the
+	// device as ready. If we deferred this, the signal could be processed
+	// while rebooting was still set and the test creation would be skipped.
+	m.rebooting.Delete(summary.Serial)
 	// Trigger reconcile so tests start immediately without waiting for a
 	// track-devices event (device state is already stable at this point).
 	if m.ReconcileFn != nil {

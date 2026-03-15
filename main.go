@@ -306,6 +306,9 @@ func main() {
 		reconcileDevices(ctx, mgr, nil)
 
 		// ADB track-devices: blocks and calls reconcile only when list changes.
+		// prevSnapshot is reset on each reconnect so that the initial device
+		// list sent by ADB after reconnect always triggers a reconcile — this
+		// ensures we catch up after a silent period (e.g. 60s read timeout).
 		var prevSnapshot string
 		adb.TrackDevices(ctx, func(devices []adb.Device) {
 			snap := deviceSnapshot(devices)
@@ -314,6 +317,8 @@ func main() {
 			}
 			prevSnapshot = snap
 			reconcileDevices(ctx, mgr, devices)
+		}, func() {
+			prevSnapshot = "" // force reconcile on next onChange after reconnect
 		})
 
 		log.Println("Shutting down.")
