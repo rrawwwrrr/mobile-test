@@ -313,7 +313,10 @@ func (m *Manager) Reconcile(ctx context.Context, devices []adb.Device) error {
 		// Remove a stopped test container, report results, then reboot device.
 		if dc.TestID != "" {
 			if _, alreadyDone := m.reported.LoadOrStore(dc.TestID, struct{}{}); alreadyDone {
-				log.Printf("[skip] already reported test container for %s", serial)
+				// Already reported but container still present — just remove it so
+				// it doesn't block future reconcile cycles.
+				log.Printf("[skip] already reported test container for %s, removing stale container", serial)
+				_ = m.cli.ContainerRemove(ctx, dc.TestID, container.RemoveOptions{Force: true})
 				continue
 			}
 			summary := m.reportTestResult(ctx, serial, dc)
