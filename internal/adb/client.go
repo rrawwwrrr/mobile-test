@@ -79,11 +79,16 @@ func TrackDevices(ctx context.Context, onChange func([]Device)) {
 			return
 		}
 		if err := trackOnce(ctx, onChange); err != nil {
-			log.Printf("[adb] track-devices: %v — reconnecting in 3s", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(3 * time.Second):
+			// On a read timeout we reconnect immediately (planned keepalive cycle).
+			// On a real error we wait 3s before retrying.
+			isTimeout := strings.Contains(err.Error(), "reconnecting")
+			if !isTimeout {
+				log.Printf("[adb] track-devices: %v — reconnecting in 3s", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(3 * time.Second):
+				}
 			}
 		}
 	}
@@ -116,12 +121,20 @@ func trackOnce(ctx context.Context, onChange func([]Device)) error {
 	}
 
 	log.Printf("[adb] track-devices: connected to ADB server")
+	const readTimeout = 60 * time.Second
 	for {
 		// Each update is prefixed with a 4-hex-char length.
+		// Set a deadline so we reconnect if ADB goes silent (e.g. daemon restart,
+		// stale TCP connection) rather than blocking forever.
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+				return fmt.Errorf("read timeout after %s, reconnecting", readTimeout)
+			}
 			return fmt.Errorf("read length: %w", err)
 		}
+		conn.SetReadDeadline(time.Time{}) // clear deadline for data read
 		n, err := strconv.ParseInt(string(lenBuf), 16, 32)
 		if err != nil {
 			return fmt.Errorf("parse length %q: %w", lenBuf, err)
