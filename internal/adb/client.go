@@ -383,12 +383,14 @@ func EnsureServerListensOnAllInterfaces() error {
 		return fmt.Errorf("adb kill-server: %w\n%s", err, out)
 	}
 
-	// Start new server listening on all interfaces
-	cmd := exec.Command("adb", "-a", "-P", "5037", "nodaemon", "server", "start")
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("adb start server: %w", err)
+	// Start new server listening on all interfaces.
+	// Use "start-server" (not "nodaemon") so ADB spawns a proper daemon
+	// with the user's environment and correct ~/.android/adbkey path —
+	// otherwise devices may appear as "unauthorized".
+	if out, err := exec.Command("adb", "-a", "start-server").CombinedOutput(); err != nil {
+		return fmt.Errorf("adb start-server: %w\n%s", err, out)
 	}
 
-	log.Printf("ADB server started in background (pid %d)", cmd.Process.Pid)
+	log.Println("ADB server started (listening on all interfaces)")
 	return nil
 }
